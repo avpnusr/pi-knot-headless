@@ -71,6 +71,7 @@ export interface State {
 	backgroundRunning: number;
 	mutated: boolean;
 	decidedThisRun: number;
+	ownIds: string[]; // ids of comments this extension posted (never delivered back, even if owner == agent account)
 }
 
 const MAX_DECISIONS = 50;
@@ -78,7 +79,7 @@ const MAX_DECISIONS = 50;
 export function newState(now: number, title: string, headModel: string): State {
 	return {
 		version: 1, title, startedAt: now, lastBeat: now, phase: "idle", headModel, headActivity: "",
-		agents: [], questions: [], decisions: [], nextQ: 1, backgroundRunning: 0, mutated: false, decidedThisRun: 0,
+		agents: [], questions: [], decisions: [], nextQ: 1, backgroundRunning: 0, mutated: false, decidedThisRun: 0, ownIds: [],
 	};
 }
 

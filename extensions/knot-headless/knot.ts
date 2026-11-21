@@ -44,7 +44,13 @@ export function createKnot(o: {
 			}
 			if (res) {
 				if (res.ok) return res;
-				if (res.status === 401 || res.status === 403) throw new KnotAuthError(`Knot rejected the token (HTTP ${res.status})`);
+				if (res.status === 401 || res.status === 403) {
+					const code = await res.json().then((j: any) => j?.error?.code as string | undefined).catch(() => undefined);
+					if (code === "bot.restricted_forbidden") {
+						throw new KnotAuthError("Knot bots may not create pages below a restricted page (bot.restricted_forbidden). Set parentPageId to an unrestricted page.");
+					}
+					throw new KnotAuthError(`Knot rejected the token (HTTP ${res.status}${code ? `, ${code}` : ""})`);
+				}
 				if (res.status !== 429 && res.status < 500) throw new Error(`Knot ${method} ${path.split("?")[0]} failed: HTTP ${res.status}`);
 				last = `HTTP ${res.status}`;
 				if (attempt < DELAYS.length) {

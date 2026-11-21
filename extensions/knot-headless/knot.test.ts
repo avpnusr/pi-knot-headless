@@ -71,6 +71,11 @@ test("401/403 -> KnotAuthError, no retry; other 4xx -> plain error, no retry", a
 	assert.equal(f.calls.length, 1);
 });
 
+test("403 bot.restricted_forbidden explains the restricted-parent rule", async () => {
+	const { knot } = fake([json({ error: { code: "bot.restricted_forbidden" } }, 403)]);
+	await assert.rejects(knot.createPage("t", "p"), (e: Error) => e instanceof KnotAuthError && /restricted page/.test(e.message) && /parentPageId/.test(e.message));
+});
+
 test("missing token -> KnotAuthError without calling fetch", async () => {
 	const calls: unknown[] = [];
 	const knot = createKnot({ fetch: (async (...a: unknown[]) => void calls.push(a)) as unknown as typeof fetch, baseUrl: "https://k", token: () => undefined, sleep: async () => {} });

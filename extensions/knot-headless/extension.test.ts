@@ -329,3 +329,13 @@ test("the timer is registered once per session_start and uses the 20 s poll", as
 	assert.equal(h.intervals.length, 2);
 	assert.equal(((globalThis as any)[Symbol.for("pi-knot-headless.timer")]), h.intervals[1]);
 });
+
+test("comments the extension posted itself are never delivered, even when owner == agent account", async () => {
+	const h = harness({ settings: { "pi-knot-headless": { url: "https://knot.example.com", parentPageId: PARENT, ownerUid: BOT } } });
+	await h.start();
+	await h.ask(critical);
+	await h.handle.tick(true);
+	await h.handle.tick(true);
+	assert.equal(h.sent.length, 0);
+	assert.equal(h.handle.state().questions.length, 1);
+});

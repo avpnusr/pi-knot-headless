@@ -122,7 +122,7 @@ export function create(pi: any, deps: Deps): Handle {
 			if (q.recommended) lines.push(`⭐ recommended: ${q.recommended}`);
 			lines.push("Reply in this thread (e.g. \"2\" or free text).");
 			const c = await knot!.addComment(st.pageId!, clean(lines.join("\n")).slice(0, 2000));
-			st = { ...st, questions: st.questions.map((x) => (x.id === q.id ? { ...x, threadId: c.thread_id } : x)) };
+			st = { ...st, ownIds: [...(st.ownIds ?? []), c.id].slice(-100), questions: st.questions.map((x) => (x.id === q.id ? { ...x, threadId: c.thread_id } : x)) };
 			persist();
 		}
 	}
@@ -157,6 +157,7 @@ export function create(pi: any, deps: Deps): Handle {
 		let run: State = { ...st, watermark: { id: last.id, createdAt: last.created_at } };
 		const items: Parameters<typeof composeDelivery>[0] = [];
 		for (const c of fresh) {
+			if ((run.ownIds ?? []).includes(c.id)) continue;
 			let mapped = mapComment(c, run, o);
 			if (mapped.kind === "ignore") continue;
 			if (mapped.kind === "answer" && !run.questions.some((q) => q.id === mapped.qid)) mapped = { kind: "general", text: mapped.text };
