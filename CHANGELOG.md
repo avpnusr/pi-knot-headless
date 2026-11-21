@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- **Task column filled for every launch style.** Subagents launched directly (`{agent, task}`) and `tasks` launches now show their task text (pi-subagents' fleet status never provides one), matched to the row by agent and start time. Chain/`tasks` launches that pi-subagents compiles into workflows get their texts too; scripted workflows show the step label. A workflow that failed before starting any worker no longer appears as an empty Orchestrator group.
+
 ## [0.2.0] - 2026-11-21
 
 - **Orchestrator groups.** A pi-subagents workflow is now shown as `Orchestrator N` with its own table of workers (and their task text) instead of a bare `workflow` row plus unrelated worker rows. Directly launched subagents get a separate `Direct subagents` table. Running orchestrators and the last finished one stay expanded; older finished ones shrink to one line. Without the pi-subagents tree snapshot the Agents section looks as before.

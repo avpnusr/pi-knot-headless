@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { newState, type State, type AgentRow } from "./core.ts";
 import {
-	mapSnapState, orchestratorsFromSnapshot, claimWorkerEntries, launchFromArgs, addLaunch, applyOrchestrators,
+	mapSnapState, orchestratorsFromSnapshot, claimWorkerEntries, launchFromArgs, addLaunch, takeDirectTask, applyOrchestrators,
 	type SnapWorker, type SnapOrch, type Launch,
 } from "./orchestrators.ts";
 
@@ -76,6 +76,20 @@ test("orchestratorsFromSnapshot skips run and worker nodes without a non-empty s
 	assert.deepEqual(out[0].workers.map((w) => w.key), ["task-1"]);
 });
 
+test("applyOrchestrators filters only new empty non-running workflows", () => {
+	const initial = orchestratorsFromSnapshot(snap([
+		wf("failed", [], { state: "failed" }),
+		wf("running", []),
+	]))!;
+	assert.deepEqual(initial.map((o) => o.id), ["failed", "running"]);
+	const first = applyOrchestrators(S(), initial, { launches: [], now: 2_000, omitted: false });
+	assert.deepEqual(first.state.orchestrators!.map((o) => [o.id, o.n, o.state]), [["running", 1, "running"]]);
+	assert.equal(first.state.nextOrch, 2);
+	const later = orchestratorsFromSnapshot(snap([wf("running", [], { state: "failed" })]))!;
+	const second = applyOrchestrators(first.state, later, { launches: [], now: 3_000, omitted: false });
+	assert.deepEqual(second.state.orchestrators!.map((o) => [o.id, o.n, o.state]), [["running", 1, "failed"]]);
+});
+
 test("claimWorkerEntries", () => {
 	const entries = [ent("e1", "coder", "glm-5.3", 1_000), ent("e2", "coder", "glm-5.3", 1_000), ent("e3", "coder", "glm-5.3", 1_000)];
 	// two workers among three identical entries: exactly two claimed
@@ -107,7 +121,7 @@ test("claimWorkerEntries ignores queued, done and missing start times", () => {
 
 test("applyOrchestrators first sight", () => {
 	const so = orchestratorsFromSnapshot(snap([wf("o1", [step("task-1", "a", "m", "running"), step("task-2", "b", "m", "running")])]))!;
-	const r = applyOrchestrators(S(), so, { launches: [{ at: 1, tasks: ["first task", "second task"], agents: ["a", "b"] }], now: 9_000, omitted: false });
+	const r = applyOrchestrators(S(), so, { launches: [{ at: 1, kind: "workflow", tasks: ["first task", "second task"], agents: ["a", "b"] }], now: 9_000, omitted: false });
 	assert.equal(r.state.orchestrators![0].n, 1);
 	assert.equal(r.state.orchestrators![0].workers, 2);
 	assert.equal(r.state.nextOrch, 2);
@@ -120,14 +134,14 @@ test("applyOrchestrators first sight", () => {
 	// the matching launch is consumed
 	assert.deepEqual(r.launches, []);
 	// an empty launch is never consumed; a row without any text falls back to the step label
-	const r2 = applyOrchestrators(S(), so, { launches: [{ at: 1, tasks: [], agents: [] }], now: 9_000, omitted: false });
-	assert.deepEqual(r2.launches, [{ at: 1, tasks: [], agents: [] }]);
+	const r2 = applyOrchestrators(S(), so, { launches: [{ at: 1, kind: "workflow", tasks: [], agents: [] }], now: 9_000, omitted: false });
+	assert.deepEqual(r2.launches, [{ at: 1, kind: "workflow", tasks: [], agents: [] }]);
 	assert.equal(r2.state.agents.find((a) => a.key === "o1:task-1")!.task, "task-1");
 	assert.equal(r2.state.nextOrch, 2);
 });
 
 test("applyOrchestrators key collision", () => {
-	const launches: Launch[] = [{ at: 1, tasks: ["two-a", "two-b"], agents: ["a", "b"] }, { at: 1, tasks: ["three-a", "three-b", "three-c"], agents: ["a", "b", "c"] }];
+	const launches: Launch[] = [{ at: 1, kind: "workflow", tasks: ["two-a", "two-b"], agents: ["a", "b"] }, { at: 1, kind: "workflow", tasks: ["three-a", "three-b", "three-c"], agents: ["a", "b", "c"] }];
 	const so = orchestratorsFromSnapshot(snap([
 		wf("X", [step("task-1", "a", "m", "running"), step("task-2", "b", "m", "running"), step("task-3", "c", "m", "running")], { startedAt: 2_000 }),
 		wf("Y", [step("task-1", "a", "m", "running"), step("task-2", "b", "m", "running")], { startedAt: 1_000 }),
@@ -145,8 +159,8 @@ test("a script workflow does not steal a same-count parallel workflow's launch",
 		wf("parallel", [step("task-1", "a", "m", "running"), step("task-2", "b", "m", "running")], { startedAt: 2_000 }),
 	]))!;
 	const launches: Launch[] = [
-		{ at: 900, tasks: [], agents: [] },
-		{ at: 1_000, tasks: ["parallel-a", "parallel-b"], agents: ["a", "b"] },
+		{ at: 900, kind: "workflow", tasks: [], agents: [] },
+		{ at: 1_000, kind: "workflow", tasks: ["parallel-a", "parallel-b"], agents: ["a", "b"] },
 	];
 	const r = applyOrchestrators(S(), so, { launches, now: 9_000, omitted: false });
 	assert.deepEqual(r.state.agents.filter((a) => a.orch === "script").map((a) => a.task), ["task-1", "task-2"]);
@@ -156,7 +170,7 @@ test("a script workflow does not steal a same-count parallel workflow's launch",
 
 test("a launch with different worker agents does not match", () => {
 	const so = orchestratorsFromSnapshot(snap([wf("o1", [step("task-1", "a", "m", "running"), step("task-2", "b", "m", "running")])]))!;
-	const launch: Launch = { at: 1_000, tasks: ["wrong-a", "wrong-b"], agents: ["b", "a"] };
+	const launch: Launch = { at: 1_000, kind: "workflow", tasks: ["wrong-a", "wrong-b"], agents: ["b", "a"] };
 	const r = applyOrchestrators(S(), so, { launches: [launch], now: 9_000, omitted: false });
 	assert.deepEqual(r.state.agents.map((a) => a.task), ["task-1", "task-2"]);
 	assert.deepEqual(r.launches, [launch]);
@@ -164,7 +178,7 @@ test("a launch with different worker agents does not match", () => {
 
 test("a launch newer than the orchestrator start does not match", () => {
 	const so = orchestratorsFromSnapshot(snap([wf("o1", [step("task-1", "a", "m", "running"), step("task-2", "b", "m", "running")], { startedAt: 1_000 })]))!;
-	const launch: Launch = { at: 6_001, tasks: ["new-a", "new-b"], agents: ["a", "b"] };
+	const launch: Launch = { at: 6_001, kind: "workflow", tasks: ["new-a", "new-b"], agents: ["a", "b"] };
 	const r = applyOrchestrators(S(), so, { launches: [launch], now: 9_000, omitted: false });
 	assert.deepEqual(r.state.agents.map((a) => a.task), ["task-1", "task-2"]);
 	assert.deepEqual(r.launches, [launch]);
@@ -172,7 +186,7 @@ test("a launch newer than the orchestrator start does not match", () => {
 
 test("applyOrchestrators later reads", () => {
 	const so = orchestratorsFromSnapshot(snap([wf("o1", [step("task-1", "a", "m", "running"), step("task-2", "b", "m", "running")])]))!;
-	let r = applyOrchestrators(S(), so, { launches: [{ at: 1, tasks: ["first task", "second task"], agents: ["a", "b"] }], now: 9_000, omitted: false });
+	let r = applyOrchestrators(S(), so, { launches: [{ at: 1, kind: "workflow", tasks: ["first task", "second task"], agents: ["a", "b"] }], now: 9_000, omitted: false });
 	// same snapshot again: numbering and task texts survive the rebuild
 	r = applyOrchestrators(r.state, so, { launches: [], now: 20_000, omitted: false });
 	assert.equal(r.state.orchestrators![0].n, 1);
@@ -185,7 +199,7 @@ test("applyOrchestrators later reads", () => {
 	assert.equal(r.state.agents.find((a) => a.key === "o1:task-1")!.task, "first task");
 	// the same vanishing read with a truncated snapshot must not decide anything
 	const mid = applyOrchestrators(
-		applyOrchestrators(S(), so, { launches: [{ at: 1, tasks: ["first task", "second task"], agents: ["a", "b"] }], now: 9_000, omitted: false }).state,
+		applyOrchestrators(S(), so, { launches: [{ at: 1, kind: "workflow", tasks: ["first task", "second task"], agents: ["a", "b"] }], now: 9_000, omitted: false }).state,
 		[], { launches: [], now: 30_000, omitted: true },
 	);
 	assert.equal(mid.state.orchestrators![0].state, "running");
@@ -213,16 +227,64 @@ test("applyOrchestrators cap keeps a returning 13th orchestrator and stable numb
 	assert.equal(gone.state.nextOrch, 22);
 });
 
-test("launchFromArgs / addLaunch", () => {
-	assert.deepEqual(launchFromArgs({ workflow: "parallel", args: { tasks: [{ agent: "a", task: "do x" }, { agent: "b", task: "do y" }] } }, 5, "call-1"), { at: 5, id: "call-1", tasks: ["do x", "do y"], agents: ["a", "b"] });
-	assert.deepEqual(launchFromArgs({ workflow: true }, 5), { at: 5, tasks: [], agents: [] });
-	assert.equal(launchFromArgs({ agent: "x", task: "y" }, 5), undefined);
+test("applyOrchestrators ignores direct launches", () => {
+	const so = orchestratorsFromSnapshot(snap([wf("o1", [step("task-1", "a", "m", "running")])]))!;
+	const launch: Launch = { at: 1_000, kind: "direct", tasks: ["direct task"], agents: ["a"] };
+	const r = applyOrchestrators(S(), so, { launches: [launch], now: 9_000, omitted: false });
+	assert.equal(r.state.agents[0].task, "task-1");
+	assert.deepEqual(r.launches, [launch]);
+});
+
+test("launchFromArgs covers direct, tasks, chain, workflow and management calls", () => {
+	assert.deepEqual(launchFromArgs({ agent: "explorer", task: "find it" }, 5, "call-1"), { at: 5, id: "call-1", kind: "direct", tasks: ["find it"], agents: ["explorer"] });
+	assert.deepEqual(launchFromArgs({ tasks: [{ agent: "a", task: "do x" }, { agent: "b", task: "do y" }] }, 5), { at: 5, kind: "workflow", tasks: ["do x", "do y"], agents: ["a", "b"] });
+	assert.deepEqual(launchFromArgs({ tasks: JSON.stringify([{ agent: "a", task: "from json" }]) }, 5), { at: 5, kind: "workflow", tasks: ["from json"], agents: ["a"] });
+	assert.deepEqual(launchFromArgs({ chain: [{ agent: "a", task: "one" }, { parallel: [{ agent: "b", task: "two" }, { agent: "c", task: "three" }] }] }, 5), { at: 5, kind: "workflow", tasks: ["one", "two", "three"], agents: ["a", "b", "c"] });
+	assert.deepEqual(launchFromArgs({ tasks: [{ agent: "a", task: "foreground" }], async: false }, 5), { at: 5, kind: "direct", tasks: ["foreground"], agents: ["a"] });
+	assert.deepEqual(launchFromArgs({ workflow: true }, 5), { at: 5, kind: "workflow", tasks: [], agents: [] });
 	assert.equal(launchFromArgs({ workflow: "p", action: "status" }, 5), undefined);
+	assert.equal(launchFromArgs({ tasks: "not json" }, 5), undefined);
+	assert.equal(launchFromArgs(undefined, 5), undefined);
+});
+
+test("takeDirectTask matches by agent and removes only the claimed item", () => {
+	const first: Launch = { at: 1_000, id: "one", kind: "direct", tasks: [" first\n task ", "second"], agents: ["a", "b"] };
+	const r = takeDirectTask([first], "a", 1_000, 2_000);
+	assert.equal(r.task, "first task");
+	assert.deepEqual(r.launches, [{ at: 1_000, id: "one", kind: "direct", tasks: ["second"], agents: ["b"] }]);
+	assert.deepEqual(takeDirectTask(r.launches, "b", undefined, 2_000), { task: "second", launches: [] });
+});
+
+test("takeDirectTask selects by start time, TTL and launch kind", () => {
+	const first: Launch = { at: 1_000, kind: "direct", tasks: ["first"], agents: ["a"] };
+	const second: Launch = { at: 2_000, kind: "direct", tasks: ["second"], agents: ["a"] };
+	const fifo = takeDirectTask([first, second], "a", undefined, 3_000);
+	assert.equal(fifo.task, "first");
+	assert.deepEqual(fifo.launches, [second]);
+	const nearest = takeDirectTask([first, second], "a", 2_000, 3_000);
+	assert.equal(nearest.task, "second");
+	assert.deepEqual(nearest.launches, [first]);
+	for (const [startedAt, now] of [[-4_001, 2_000], [601_000, 601_000], [undefined, 601_000]] as const) {
+		const misses = takeDirectTask([first], "a", startedAt, now);
+		assert.equal(misses.task, undefined);
+		assert.equal(misses.launches[0], first);
+	}
+	const workflow: Launch = { at: 1_000, kind: "workflow", tasks: ["wrong"], agents: ["a"] };
+	assert.deepEqual(takeDirectTask([workflow], "a", undefined, 2_000), { launches: [workflow] });
+	const noMatch = takeDirectTask([first], "other", 1_000, 2_000);
+	assert.deepEqual(noMatch, { launches: [first] });
+	assert.equal(noMatch.launches[0], first);
+	const empty = { at: 1_000, kind: "direct" as const, tasks: [" \n "], agents: ["a"] };
+	assert.deepEqual(takeDirectTask([empty], "a", 1_000, 2_000), { launches: [empty] });
+});
+
+test("launchFromArgs / addLaunch", () => {
+	assert.deepEqual(launchFromArgs({ workflow: "parallel", args: { tasks: [{ agent: "a", task: "do x" }, { agent: "b", task: "do y" }] } }, 5, "call-1"), { at: 5, id: "call-1", kind: "workflow", tasks: ["do x", "do y"], agents: ["a", "b"] });
 	let list: Launch[] = [];
-	for (let i = 0; i < 20; i++) list = addLaunch(list, { at: 1_000 + i, tasks: ["t"], agents: ["a"] }, 2_000);
+	for (let i = 0; i < 20; i++) list = addLaunch(list, { at: 1_000 + i, kind: "direct", tasks: ["t"], agents: ["a"] }, 2_000);
 	assert.equal(list.length, 16);
 	assert.equal(list[0]!.at, 1_004); // the newest 16 are kept
-	assert.deepEqual(addLaunch([{ at: 0, tasks: ["t"], agents: ["a"] }], { at: 600_001, tasks: ["n"], agents: ["a"] }, 600_001), [{ at: 600_001, tasks: ["n"], agents: ["a"] }]); // older than 10 min is dropped
+	assert.deepEqual(addLaunch([{ at: 0, kind: "direct", tasks: ["t"], agents: ["a"] }], { at: 600_001, kind: "direct", tasks: ["n"], agents: ["a"] }, 600_001), [{ at: 600_001, kind: "direct", tasks: ["n"], agents: ["a"] }]); // older than 10 min is dropped
 });
 
 test("launchFromArgs bounds tasks and agents", () => {
@@ -231,4 +293,25 @@ test("launchFromArgs bounds tasks and agents", () => {
 	assert.equal(launch.agents.length, 64);
 	assert.ok(launch.tasks.every((t) => t === "t".repeat(200)));
 	assert.ok(launch.agents.every((a) => a === "a".repeat(200)));
+});
+
+test("launchFromArgs normalizes every parsing branch before truncation", () => {
+	const item = { agent: " a \n", task: " one\n  two " };
+	for (const args of [
+		item,
+		{ tasks: [item], async: false },
+		{ chain: [item] },
+		{ workflow: "parallel", args: { tasks: [item] } },
+	]) {
+		const launch = launchFromArgs(args, 5)!;
+		assert.deepEqual(launch.tasks, ["one two"]);
+		assert.deepEqual(launch.agents, ["a"]);
+	}
+	const launch = launchFromArgs({ agent: "a", task: `${"x".repeat(150)}${" ".repeat(45)}SECRET` }, 5)!;
+	assert.deepEqual(launch.tasks, [`${"x".repeat(150)} SECRET`]);
+});
+
+test("launchFromArgs ignores hostile non-string task and agent values", () => {
+	assert.deepEqual(launchFromArgs({ agent: "a", task: { toString: 1 } }, 5), { at: 5, kind: "direct", tasks: [""], agents: ["a"] });
+	assert.deepEqual(launchFromArgs({ tasks: [{ agent: { toString: 1 }, task: "x" }] }, 5), { at: 5, kind: "workflow", tasks: ["x"], agents: [""] });
 });

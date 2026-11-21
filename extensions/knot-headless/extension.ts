@@ -10,7 +10,7 @@ import { loadConfig, type Config } from "./config.ts";
 import { createKnot, tokenVarFor, KnotAuthError, KnotResponseError, type Knot } from "./knot.ts";
 import { render, defang } from "./render.ts";
 import { buildSummaryInput, parseSummaryReply, gate, SYSTEM_PROMPT, TITLE_PROMPT } from "./summary.ts";
-import { orchestratorsFromSnapshot, claimWorkerEntries, applyOrchestrators, launchFromArgs, addLaunch, type Launch } from "./orchestrators.ts";
+import { orchestratorsFromSnapshot, claimWorkerEntries, applyOrchestrators, launchFromArgs, addLaunch, takeDirectTask, type Launch } from "./orchestrators.ts";
 
 export interface Deps {
 	now: () => number;
@@ -262,7 +262,13 @@ export function create(pi: any, deps: Deps): Handle {
 			const seen = nestedMap.get(name);
 			const prev = st.agents.find((a) => !a.orch && a.key === key);
 			const n = Math.max(seen?.n ?? 0, prev?.nested ?? 0);
-			live.set(key, { key, name, model: String(e.model ?? ""), state: "working", task: String(e.goal ?? e.role ?? ""), ...(n ? { nested: n, nestedTruncated: seen ? seen.truncated : !!prev?.nestedTruncated } : {}) });
+			let task = prev?.task ?? String(e.goal ?? e.role ?? "");
+			if (!prev) {
+				const r = takeDirectTask(launches, name, e.startedAt, deps.now());
+				if (!task) task = r.task ?? "";
+				launches = r.launches;
+			}
+			live.set(key, { key, name, model: String(e.model ?? ""), state: "working", task, ...(n ? { nested: n, nestedTruncated: seen ? seen.truncated : !!prev?.nestedTruncated } : {}) });
 		}
 		// a row that left the fleet has finished; if the fleet was truncated we cannot tell, so keep it as it was
 		const carried = st.agents.filter((a) => !a.orch && !live.has(a.key)).map((a) => (a.state === "working" && omitted === 0 ? { ...a, state: "done" as const } : a));

@@ -3,7 +3,7 @@ import type { AgentRow, Orchestrator, State } from "./core.ts";
 
 export interface SnapWorker { key: string; label: string; agent: string; model: string; state: AgentRow["state"]; startedAt?: number; nested: number; nestedTruncated: boolean }
 export interface SnapOrch { id: string; state: Orchestrator["state"]; startedAt?: number; endedAt?: number; truncated: boolean; workers: SnapWorker[] }
-export interface Launch { at: number; id?: string; tasks: string[]; agents: string[] }
+export interface Launch { at: number; id?: string; kind: "workflow" | "direct"; tasks: string[]; agents: string[] }
 
 const MAX_ORCH = 20;
 const MAX_LAUNCHES = 16;
@@ -51,9 +51,9 @@ export function orchestratorsFromSnapshot(snapshot: any): SnapOrch[] | undefined
 				nestedTruncated: (Array.isArray(c.children) ? c.children.length : 0) >= cap,
 			});
 		}
+		const state = r.state === "complete" ? "done" : r.state === "queued" || r.state === "running" || r.state === "paused" ? "running" : "failed";
 		out.push({
-			id: r.id,
-			state: r.state === "complete" ? "done" : r.state === "queued" || r.state === "running" || r.state === "paused" ? "running" : "failed",
+			id: r.id, state,
 			startedAt: finite(r.startedAt), endedAt: finite(r.endedAt), truncated: children.length >= cap, workers,
 		});
 	}
@@ -82,13 +82,48 @@ export function claimWorkerEntries(entries: any[], orchs: SnapOrch[]): Set<strin
 }
 
 export function launchFromArgs(args: any, now: number, id?: string): Launch | undefined {
-	if (!args?.workflow || args.action) return undefined;
-	const tasks = Array.isArray(args?.args?.tasks) ? args.args.tasks.slice(0, 64) : [];
+	if (!args || args.action) return undefined;
+	const array = (v: any): any[] => {
+		if (typeof v === "string") {
+			try { v = JSON.parse(v); } catch { return []; }
+		}
+		return Array.isArray(v) ? v : [];
+	};
+	const grouped = args.tasks !== undefined || args.chain !== undefined || args.args?.tasks !== undefined;
+	const tasks = array(args.tasks ?? args.args?.tasks);
+	const chain = array(args.chain).flatMap((x: any) => Array.isArray(x?.parallel) ? x.parallel : [x]);
+	let items = (args.chain === undefined ? tasks : chain).slice(0, 64);
+	if (!grouped && !args.workflow) {
+		if (!args.agent || !args.task) return undefined;
+		items = [args];
+	}
+	if (!args.workflow && items.length === 0) return undefined;
+	const text = (v: any): string => (typeof v === "string" ? v : "").replace(/\s+/g, " ").trim().slice(0, MAX_TASK);
 	return {
 		at: now, ...(id === undefined ? {} : { id }),
-		tasks: tasks.map((t: any) => String(t?.task ?? "").slice(0, MAX_TASK)),
-		agents: tasks.map((t: any) => String(t?.agent ?? "").slice(0, MAX_TASK)),
+		kind: args.workflow || (grouped && args.async !== false) ? "workflow" : "direct",
+		tasks: items.map((t: any) => text(t?.task)),
+		agents: items.map((t: any) => text(t?.agent)),
 	};
+}
+
+export function takeDirectTask(launches: Launch[], agent: string, startedAt: number | undefined, now: number): { task?: string; launches: Launch[] } {
+	let best: { li: number; i: number; l: Launch } | undefined;
+	for (const [li, l] of launches.entries()) {
+		if (l.kind !== "direct" || now - l.at >= LAUNCH_TTL_MS || (startedAt !== undefined && (l.at > startedAt + 5_000 || startedAt - l.at >= LAUNCH_TTL_MS))) continue;
+		const i = l.agents.indexOf(agent);
+		if (i < 0) continue;
+		if (!best || l.at > best.l.at) best = { li, i, l };
+		if (startedAt === undefined) break;
+	}
+	if (!best) return { launches };
+	const { li, i, l } = best;
+	const task = l.tasks[i]?.replace(/\s+/g, " ").trim().slice(0, MAX_TASK);
+	if (!task) return { launches };
+	const next = [...launches];
+	if (l.agents.length === 1) next.splice(li, 1);
+	else next[li] = { ...l, tasks: l.tasks.filter((_, j) => j !== i), agents: l.agents.filter((_, j) => j !== i) };
+	return { task, launches: next };
 }
 
 export function addLaunch(list: Launch[], l: Launch, now: number): Launch[] {
@@ -104,12 +139,13 @@ export function applyOrchestrators(s: State, snap: SnapOrch[], o: { launches: La
 	const orchs: Orchestrator[] = [];
 	const rows: AgentRow[] = [];
 	for (const so of [...snap].sort((a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity))) { // (a) oldest first
+		if (so.workers.length === 0 && so.state !== "running" && !prevOrch.has(so.id)) continue;
 		const prev = prevOrch.get(so.id);
 		let texts: string[] | undefined;
 		let n = prev?.n;
 		if (n === undefined) { // (b)+(c) a new orchestrator takes the oldest launch that fits its lane count
 			n = next++;
-			const i = launches.findIndex((l) => l.tasks.length > 0
+			const i = launches.findIndex((l) => l.kind === "workflow" && l.tasks.length > 0
 				&& (so.truncated ? l.tasks.length >= so.workers.length : l.tasks.length === so.workers.length)
 				&& l.agents.length >= so.workers.length && so.workers.every((w, i) => w.agent === l.agents[i])
 				&& (so.startedAt === undefined || (l.at <= so.startedAt + 5_000 && so.startedAt - l.at < LAUNCH_TTL_MS)));

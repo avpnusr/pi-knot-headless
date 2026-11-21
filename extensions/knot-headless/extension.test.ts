@@ -582,6 +582,86 @@ test("task text comes from the launch arguments", async () => {
 	assert.deepEqual(h.handle.state().agents.map((a) => a.task), ["fix the parser", "write tests"]);
 });
 
+test("a direct launch supplies task text to a new fleet row", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const startedAt = h.clock.t;
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "direct-1", args: { agent: "explorer", task: "find the parser" } });
+	h.fleet = { entries: [{ key: "d1", agent: "explorer", model: "m", startedAt }], totalActive: 1 };
+	await h.runTimeouts();
+	assert.deepEqual(h.handle.state().agents.map((a) => [a.name, a.task]), [["explorer", "find the parser"]]);
+});
+
+test("a new direct row with a role consumes its launch without changing the displayed task", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const startedAt = h.clock.t;
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "direct-1", args: { agent: "explorer", task: "first search" } });
+	h.fleet = { entries: [{ key: "d1", agent: "explorer", model: "m", role: "scout", startedAt }], totalActive: 1 };
+	await h.runTimeouts();
+	assert.equal(h.handle.state().agents[0].task, "scout");
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "direct-2", args: { agent: "explorer", task: "second search" } });
+	h.fleet = { entries: [{ key: "d2", agent: "explorer", model: "m", startedAt }], totalActive: 1 };
+	await h.runTimeouts();
+	assert.equal(h.handle.state().agents.find((a) => a.key === "d2")!.task, "second search");
+});
+
+test("hostile direct arguments still trigger the page and fleet with empty task text", async () => {
+	const h = harness();
+	await h.start();
+	h.fleet = { entries: [{ key: "d1", agent: "a", model: "m", startedAt: h.clock.t }], totalActive: 1 };
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "direct-1", args: { agent: "a", task: { toString: 1 } } });
+	await h.handle.tick(true);
+	assert.equal(h.knot.created.length, 1);
+	await h.runTimeouts();
+	assert.deepEqual(h.handle.state().agents.map((a) => [a.name, a.task]), [["a", ""]]);
+});
+
+test("two direct launches of one agent supply their task texts in FIFO order", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const startedAt = h.clock.t;
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "direct-1", args: { agent: "explorer", task: "first search" } });
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "direct-2", args: { agent: "explorer", task: "second search" } });
+	h.fleet = { entries: [
+		{ key: "d1", agent: "explorer", model: "m", startedAt },
+		{ key: "d2", agent: "explorer", model: "m", startedAt },
+	], totalActive: 2 };
+	await h.runTimeouts();
+	assert.deepEqual(h.handle.state().agents.map((a) => [a.key, a.task]), [["d1", "first search"], ["d2", "second search"]]);
+});
+
+test("a JSON string chain supplies task text to step ids in launch order", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const startedAt = h.clock.t;
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "chain-1", args: { chain: JSON.stringify([{ agent: "a", task: "first chain task" }, { agent: "b", task: "second chain task" }]) } });
+	h.fleet = { entries: [], totalActive: 0 };
+	h.snapshot = orchSnapshot([orchWorkflow("chain", [orchStep("step-one", "a", "m", startedAt), orchStep("step-two", "b", "m", startedAt)], startedAt)]);
+	await readAgents(h);
+	assert.deepEqual(h.handle.state().agents.map((a) => a.task), ["first chain task", "second chain task"]);
+});
+
+test("an empty failed workflow does not become an orchestrator", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	h.fleet = { entries: [], totalActive: 0 };
+	h.snapshot = orchSnapshot([{ ...orchWorkflow("failed", []), state: "failed" }]);
+	await readAgents(h);
+	assert.deepEqual(h.handle.state().orchestrators, []);
+	assert.deepEqual(h.handle.state().agents, []);
+});
+
 test("a failed workflow launch is removed before it can supply task text", async () => {
 	const h = harness();
 	await h.start();
