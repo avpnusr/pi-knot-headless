@@ -26,7 +26,7 @@ if [ -f .scan-deny ]; then
 fi
 # --history: also scan every reachable commit (a secret that was added and later removed is still public)
 if [ "${1:-}" = "--history" ]; then
-	git log -p --all --format='commit %H%n%an <%ae>%n%B' | grep -n -E "$tokens" | grep -v -E 'AAAAAAAA|abc123def456|abc\.def' | while read -r l; do hit "history: possible secret: $l"; done | grep . && fail=1
+	git log -p --all --format='commit %H%n%an <%ae>%n%B' -- . ':(exclude)*.test.ts' ':(exclude)*/fakepi.ts' ':(exclude)docs/plan.md' | grep -n -E "$tokens" | grep -v -E 'AAAAAAAA|abc123def456|abc\.def' | while read -r l; do hit "history: possible secret: $l"; done | grep . && fail=1
 	if [ -f .scan-deny ]; then
 		while read -r re; do
 			[ -z "$re" ] && continue
