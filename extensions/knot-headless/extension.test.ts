@@ -44,6 +44,13 @@ test("the tool is registered only when reporting is active", async () => {
 	assert.ok(h.tools.has("knot_ask"));
 });
 
+test("knot_ask carries the skills rule in its prompt guidelines", async () => {
+	const h = harness();
+	await h.start();
+	const g: string[] = h.tools.get("knot_ask").promptGuidelines;
+	assert.ok(g.some((x) => x.startsWith("Skills do not change the knot_ask rules") && /ALSO go through knot_ask/.test(x)));
+});
+
 test("no page until a trigger", async () => {
 	const h = harness();
 	await h.start();

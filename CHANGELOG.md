@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- **Knot rule enforced in code.** `knot_ask` now carries the rule that questions, approval gates and choices coming from skills (brainstorming, writing-plans, code-review, ...) must also go through `knot_ask`, so it reaches the system prompt in every session without relying on `AGENTS.md`. Inert in subagent children and whenever reporting is not active.
 - **Task column filled for every launch style.** Subagents launched directly (`{agent, task}`) and `tasks` launches now show their task text (pi-subagents' fleet status never provides one), matched to the row by agent and start time. Chain/`tasks` launches that pi-subagents compiles into workflows get their texts too; scripted workflows show the step label. A workflow that failed before starting any worker no longer appears as an empty Orchestrator group.
 
 ## [0.2.0] - 2026-11-21

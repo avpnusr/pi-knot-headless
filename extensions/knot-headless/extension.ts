@@ -38,6 +38,8 @@ const TIMER_KEY = Symbol.for("pi-knot-headless.timer");
 const MAX_ROWS = 30;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SELF_OWNER_WARNING = "pi-knot-headless: ownerUid is the agent's own Knot account, so anyone holding that token (the agent's shell, subagents) can answer as you. Use a separate bot token for the agent.";
+// Skills (brainstorming, writing-plans, code-review, ...) tell the model to "ask the user" in chat; this keeps those questions on the Knot page too.
+export const KNOT_SKILLS_RULE = "Skills do not change the knot_ask rules: every question, approval gate or choice a skill makes you put to the user (brainstorming, writing-plans, code-review, ...) must ALSO go through knot_ask, never only into the chat. Clarifying questions: normal with a recommended default, or critical when there is no safe default. Approval gates (design/plan approval, 'may I build/merge/delete'): critical with options. Choices a skill lets you make for the user: minor, reason in why. The Knot page cannot see the chat, so make each knot_ask self-contained (question, options, recommendation, path of any spec/plan to read), then stop and wait for the answer. Only if knot_ask is unavailable, ask in the chat.";
 const SELF_OWNER_TOOL_MESSAGE = "Knot answers are disabled because ownerUid is the agent's own Knot account. Use a separate bot token for the agent, and ask the user directly in this session instead of waiting for a Knot answer.";
 
 export function readGlobalSettings(env: Record<string, string | undefined>): unknown {
@@ -506,7 +508,7 @@ export function create(pi: any, deps: Deps): Handle {
 	}));
 
 	// ---- tool + command -------------------------------------------------------
-	function registerAskTool() {
+	function registerAskTool() { // its promptGuidelines reach the system prompt only while the tool is registered, so children, enabled:false and unconfigured sessions stay untouched
 		if (toolRegistered) return;
 		toolRegistered = true;
 		pi.registerTool({
@@ -519,6 +521,7 @@ export function create(pi: any, deps: Deps): Handle {
 				"Use knot_ask to record every non-trivial decision you make (severity minor, put the choice in recommended) and to ask the user whenever a choice is theirs to make.",
 				"Use knot_ask with severity critical for anything hard to reverse, destructive, security-relevant, costly, externally publishing, or when requirements are unclear; use normal for real but reversible choices (recommended is required); use minor for easy, uncritical choices. When unsure, choose the higher severity.",
 				"Call knot_ask alone in its tool batch. After a normal or critical knot_ask stop work that depends on the answer: it arrives later as a user message starting with 'Knot answer to Qn' or '[Knot message from user]'.",
+				KNOT_SKILLS_RULE,
 				"When a subagent's question reaches you, put its replyTo id in the why field of knot_ask and answer the subagent with subagent_supervisor after the user has answered.",
 			],
 			parameters: deps.paramsSchema,
