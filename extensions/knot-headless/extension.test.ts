@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { harness, FakeKnot, OWNER, BOT, PARENT, makeRoute, ev } from "./fakepi.ts";
+import { harness, FakeKnot, OWNER, BOT, PARENT, makeRoute, ev, wfDir, WF_ID } from "./fakepi.ts";
 import { KnotAuthError, KnotResponseError } from "./knot.ts";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -574,6 +574,21 @@ test("a workflow becomes an Orchestrator with its workers", async () => {
 	assert.equal(new Set(st.agents.map((a) => a.key)).size, 2);
 	await h.handle.tick(true);
 	assert.ok(h.knot.replaces.at(-1)!.includes("### 🎛 Orchestrator 1"));
+});
+
+test("scripted workflow workers show pi-subagents' step excerpt from status.json (no launch args involved)", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const w = wfDir({ steps: [{ agent: "a", workflowKey: "pass1", label: "pass1", sessionName: "a: check the parser" }, { agent: "b", workflowKey: "pass2", label: "pass2", sessionName: "b: write the tests" }] });
+	h.fleet = { entries: [{ key: "w", agent: "workflow" }, { key: "w1", agent: "a", model: "m", startedAt: 1000 }, { key: "w2", agent: "b", model: "m", startedAt: 1000 }], totalActive: 3 };
+	h.snapshot = orchSnapshot([orchWorkflow(WF_ID, [orchStep("pass1", "a"), orchStep("pass2", "b")])]);
+	h.pi.events.emit("subagent:async-started", w.payload);
+	await readAgents(h);
+	assert.deepEqual(h.handle.state().agents.map((a) => a.task), ["check the parser", "write the tests"]);
+	await h.handle.tick(true);
+	assert.ok(h.knot.replaces.at(-1)!.includes("check the parser"));
 });
 
 test("task text comes from the launch arguments", async () => {

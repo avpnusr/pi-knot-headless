@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Task column for scripted workflows.** Workers of a scripted workflow (`workflow: true`) now show a task excerpt instead of just the step label. It is read from the `sessionName` pi-subagents stores in the workflow's `status.json` (found through the `asyncDir` of the `subagent:async-started` event; read-only, validated path, size cap). Launch-argument text still wins when available.
+
 ## [0.2.1] - 2026-11-21
 
 - **Nested fan-out count works live.** pi-subagents' status snapshot never carried nested runs for async launches (it drops the nested route), so `+N nested` never appeared. The count is now read from the nested-event files via the `nestedRoute` of the `subagent:async-started` event (read-only, validated path, size and count caps, nothing of the route is stored or written to the page), merged with the snapshot count. Async launches only. Upstream cause: nicobailon/pi-subagents#3316.

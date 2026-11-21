@@ -112,7 +112,7 @@ after a question; the answer arrives as a user message starting `Knot answer to 
 ## Limitations
 
 - An answer sent while the head model is inside a long foreground subagent call is delivered after that call ends (pi's `steer` semantics).
-- The Task column of background subagents is often empty: pi-subagents redacts the task prompt in its events.
+- pi-subagents redacts task prompts in its events, so the Task column is filled from the arguments of your `subagent` call (single, `tasks`, `chain`, named workflows) and, for scripted workflows, from the step's `sessionName` that pi-subagents writes into its run's `status.json` (read-only, a short excerpt of about 70 characters). Where neither is available the row shows the step label.
 - Pages are not deleted automatically; finished pages stay as an overview. Archive them in Knot when you no longer need them.
 - Subagent launches are shown in the table but not logged as decisions. The agents table comes from pi-subagents' fleet status, which lists at most 16 active children at a time.
 - The dollar figure is pi-subagents' list-price estimate and a lower bound (`≥`) while async children are still unaccounted. On flat plans it is not what you pay; the token counts are the reliable part.

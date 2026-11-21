@@ -6,6 +6,7 @@ import {
 	isInert, assignDots, nestedByAgent, parseCost, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
 	newComments, mapComment, composeDelivery, timeoutMessage, type State, type AgentRow, type Severity,
 } from "./core.ts";
+import { openAsyncDir, readStepTexts } from "./steptexts.ts";
 import { openRoute, pollRoute, routeCounts, type Route } from "./nestedroute.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { createKnot, tokenVarFor, KnotAuthError, KnotResponseError, type Knot } from "./knot.ts";
@@ -98,6 +99,7 @@ export function create(pi: any, deps: Deps): Handle {
 	let firstPrompt = "";
 	let warnedRun = false;
 	let fleetTimer: unknown;
+	const wfDirs = new Map<string, { dir: string; done: boolean; texts: Map<string, string> }>(); // workflow id -> async dir + latest step texts
 	const routes = new Map<string, Route>(); // async id -> nested route (in memory only, holds a capability token)
 	let chain: Promise<unknown> = Promise.resolve();
 	const offs: Array<() => void> = [];
@@ -289,7 +291,7 @@ export function create(pi: any, deps: Deps): Handle {
 		const dropped = Math.max(0, all.length - MAX_ROWS);
 		all = all.slice(-MAX_ROWS); // only direct rows compete for MAX_ROWS; orchestrator rows are rebuilt below
 		if (snap) {
-			const r = applyOrchestrators({ ...st, agents: [...all, ...st.agents.filter((a) => a.orch)] }, snap, { launches, now: deps.now(), omitted: Number((snapshot as any)?.omitted?.runs ?? 0) > 0 });
+			const r = applyOrchestrators({ ...st, agents: [...all, ...st.agents.filter((a) => a.orch)] }, snap, { launches, now: deps.now(), omitted: Number((snapshot as any)?.omitted?.runs ?? 0) > 0, stepTexts: new Map([...wfDirs].map(([id, w]) => [id, w.texts])) });
 			st = r.state;
 			launches = r.launches;
 			all = st.agents;
@@ -319,6 +321,7 @@ export function create(pi: any, deps: Deps): Handle {
 	async function readFleet(): Promise<void> {
 		if (!st.pageId || stopped) return;
 		for (const r of routes.values()) if (!r.done) pollRoute(r);
+		for (const w of wfDirs.values()) if (!w.done) w.texts = readStepTexts(w.dir);
 		const data = await rpc("status");
 		try {
 			const fleet = data?.fleet;
@@ -412,6 +415,7 @@ export function create(pi: any, deps: Deps): Handle {
 	pi.on("session_start", guard(async (event: any, ctx: any) => {
 		launches = [];
 		routes.clear();
+		wfDirs.clear();
 		ctxRef = ctx;
 		stopped = false;
 		gen++;
@@ -516,12 +520,19 @@ export function create(pi: any, deps: Deps): Handle {
 			routes.set(p.id, r);
 			if (routes.size > MAX_ROUTES) routes.delete(routes.keys().next().value as string);
 		}
+		const dir = openAsyncDir(p);
+		if (dir) {
+			wfDirs.set(p.id, { dir, done: false, texts: new Map() });
+			if (wfDirs.size > MAX_ROUTES) wfDirs.delete(wfDirs.keys().next().value as string);
+		}
 		void launchTrigger().then(scheduleFleet);
 	}));
 	onEvent("subagent:child-status", guard(() => scheduleFleet()));
 	onEvent("subagent:jobs-changed", guard(() => scheduleFleet()));
 	onEvent("subagent:async-complete", guard((p: any) => {
 		const r = routes.get(String(p?.id));
+		const w = wfDirs.get(String(p?.id));
+		if (w) { w.texts = readStepTexts(w.dir); w.done = true; }
 		if (r) { pollRoute(r); r.done = true; } // last read; the count stays on the row
 		const failed = new Set((Array.isArray(p?.results) ? p.results : []).filter((r: any) => /fail|error|time/i.test(String(r?.status))).map((r: any) => String(r.agent)));
 		// jobs-changed usually arrives first and has already turned the row "done", so flip done -> failed too

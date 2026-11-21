@@ -130,7 +130,7 @@ export function addLaunch(list: Launch[], l: Launch, now: number): Launch[] {
 	return [...list.filter((x) => now - x.at < LAUNCH_TTL_MS), l].slice(-MAX_LAUNCHES);
 }
 
-export function applyOrchestrators(s: State, snap: SnapOrch[], o: { launches: Launch[]; now: number; omitted: boolean }): { state: State; launches: Launch[] } {
+export function applyOrchestrators(s: State, snap: SnapOrch[], o: { launches: Launch[]; now: number; omitted: boolean; stepTexts?: Map<string, Map<string, string>> }): { state: State; launches: Launch[] } {
 	const prevOrch = new Map((s.orchestrators ?? []).map((x) => [x.id, x]));
 	const prevRow = new Map(s.agents.map((a) => [a.key, a]));
 	const direct = s.agents.filter((a) => !a.orch); // (g) rows without an orchestrator are never touched
@@ -155,7 +155,9 @@ export function applyOrchestrators(s: State, snap: SnapOrch[], o: { launches: La
 		for (const [i, w] of so.workers.entries()) { // (d) worker rows are rebuilt on every call
 			const rk = `${so.id}:${w.key}`;
 			const t = texts?.[/^task-(\d+)$/.test(w.key) ? Number(w.key.slice(5)) - 1 : i];
-			const task = t !== undefined ? t.replace(/\s+/g, " ").trim().slice(0, MAX_TASK) : prevRow.get(rk)?.task ?? w.label;
+			const prevTask = prevRow.get(rk)?.task;
+			// full launch text wins, then a text we already had, then pi-subagents' step excerpt (scripted workflows), then the step label
+			const task = t !== undefined ? t.replace(/\s+/g, " ").trim().slice(0, MAX_TASK) : (prevTask && prevTask !== w.label ? prevTask : undefined) ?? o.stepTexts?.get(so.id)?.get(w.key) ?? prevTask ?? w.label;
 			rows.push({ key: rk, name: w.agent, model: w.model, state: w.state, task, orch: so.id, ...(w.nested > 0 ? { nested: w.nested, nestedTruncated: w.nestedTruncated } : {}) });
 		}
 	}

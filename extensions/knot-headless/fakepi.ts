@@ -1,7 +1,7 @@
 // Test helpers: a fake `pi`, a fake Knot server and a harness wiring them to create().
 import { create, type Deps, type Handle } from "./extension.ts";
 import type { Comment, Knot } from "./knot.ts";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -120,4 +120,14 @@ export function makeRoute() {
 }
 // shape taken from real pi-subagents events (reduced)
 export const ev = (type: string, id: string, extra: any = {}, root = ROOT) => JSON.stringify({ type, ts: 1, rootRunId: root, parentRunId: "d5bd9fe3", child: { id, depth: 1, state: "running", path: [{ runId: "d5bd9fe3", stepIndex: 0, agent: "security-reviewer" }], ...extra } });
+
+
+// workflow async-dir fixture for steptexts
+export const WF_ID = "0fffffff-0000-4000-8000-000000000005";
+export function wfDir(status: unknown) {
+	const dir = join(mkdtempSync(join(tmpdir(), "st-")), "pi-subagents-uid-1", "async-subagent-runs", WF_ID);
+	mkdirSync(dir, { recursive: true });
+	if (status !== undefined) writeFileSync(join(dir, "status.json"), typeof status === "string" ? status : JSON.stringify(status));
+	return { dir, payload: { id: WF_ID, mode: "workflow", asyncDir: dir } };
+}
 

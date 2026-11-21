@@ -90,6 +90,20 @@ test("applyOrchestrators filters only new empty non-running workflows", () => {
 	assert.deepEqual(second.state.orchestrators!.map((o) => [o.id, o.n, o.state]), [["running", 1, "failed"]]);
 });
 
+test("applyOrchestrators worker text: launch text > text already shown > step excerpt > step label", () => {
+	const stepTexts = new Map([["o", new Map([["task-1", "excerpt one"], ["task-2", "excerpt two"]])]]);
+	const workers = [wrk("task-1"), wrk("task-2"), wrk("task-3")];
+	const first = applyOrchestrators(S(), orch(workers), { launches: [], now: 2_000, omitted: false, stepTexts });
+	assert.deepEqual(first.state.agents.map((a) => a.task), ["excerpt one", "excerpt two", "task-3"]);
+	// a later poll with other excerpts does not replace what the row already shows; the label-only row still picks up a new excerpt
+	const stepTexts2 = new Map([["o", new Map([["task-1", "changed"], ["task-3", "now known"]])]]);
+	const second = applyOrchestrators(first.state, orch(workers), { launches: [], now: 3_000, omitted: false, stepTexts: stepTexts2 });
+	assert.deepEqual(second.state.agents.map((a) => a.task), ["excerpt one", "excerpt two", "now known"]);
+	// full launch text beats the excerpt
+	const launched = applyOrchestrators(S(), orch([wrk("task-1")]), { launches: [{ at: 1_000, kind: "workflow", tasks: ["the full launch text"], agents: ["coder"] }], now: 2_000, omitted: false, stepTexts });
+	assert.equal(launched.state.agents[0].task, "the full launch text");
+});
+
 test("claimWorkerEntries", () => {
 	const entries = [ent("e1", "coder", "glm-5.3", 1_000), ent("e2", "coder", "glm-5.3", 1_000), ent("e3", "coder", "glm-5.3", 1_000)];
 	// two workers among three identical entries: exactly two claimed
