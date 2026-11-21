@@ -58,8 +58,7 @@ Add a block to your **global** pi `settings.json` (`~/.pi/agent/settings.json`, 
   "url": "https://knot.example.com",
   "parentPageId": "<uuid of an unrestricted page>",
   "ownerUid": "<your Knot user id>",
-  "tokenEnv": { "claude-bridge": "KNOT_TOKEN_CLAUDE", "ollama-cloud": "KNOT_TOKEN_OLLAMA", "*": "KNOT_TOKEN" },
-  "secretEnv": ["GITHUB_TOKEN"]
+  "tokenEnv": { "claude-bridge": "KNOT_TOKEN_CLAUDE", "ollama-cloud": "KNOT_TOKEN_OLLAMA", "*": "KNOT_TOKEN" }
 }
 ```
 
