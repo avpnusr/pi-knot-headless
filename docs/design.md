@@ -64,7 +64,7 @@ Inert (no tools, no timers, no network) if `process.env.PI_SUBAGENT_CHILD === "1
 
 ### Page (write-only dashboard; no moving parts)
 Header (state, title, "started HH:MM", last heartbeat) → 🧠 head line (model, current activity) → **Needs you** (open questions with ids `Q1…` and numbered options `Q1.1 …`; empty = "nothing needs you 🎉") → agents table → **Decisions reported** (last 8 + "N older") → footer (how to answer).
-- Identity dot per agent name, stable palette 🟣🔵🟢🟡🟠🟤⚫⚪ (hash of name); head 🧠. Status glyph separate, never a colored dot: ▶ working ✅ done ❌ failed ⏳ waiting for you 💤 idle ⏸ paused.
+- Identity dot per agent name, stable palette 🟣🔵🟢🟡🟠🟤 (hash of name); head 🧠. Status glyph separate, never a colored dot: ▶ working ✅ done ❌ failed ⏳ waiting for you 💤 idle ⏸ paused.
 - **Page states:** ▶ running, 💤 idle ("comment to give a new task"; polling continues), ✅ ended (only on `session_shutdown` with `reason` ≠ `reload`). Ended page: outcome line, duration, models used, subagent table (final), decisions, cost via RPC `cost` (once). Note "N background runs still running; results not delivered" if detached runs remain.
 - Writes: skip if markdown byte-identical to the last write; ≥15–30 s apart (trailing debounce); heartbeat line refreshed every 5 min; always `?mode=replace`.
 - **Escaping:** all dynamic text is single-line and escaped (`[ ] | # > * \`` backticks, links); cells truncated (~80 chars). Only allow-listed fields are rendered: agent name, model, state, bounded label/goal, model-authored question/options/why, session name. Never tool arguments/outputs.

@@ -6,14 +6,16 @@ export function esc(text: string, max = 80): string {
 	return t.replace(/([\\`*_{}\[\]<>#|~])/g, "\\$1");
 }
 
-const PALETTE = ["🟣", "🔵", "🟢", "🟡", "🟠", "🟤", "⚫", "⚪"];
+const PALETTE = ["🟣", "🔵", "🟢", "🟡", "🟠", "🟤"]; // colored circles that render as emoji everywhere (⚫⚪ fall back to text glyphs)
 const GLYPH: Record<string, string> = { working: "▶", done: "✅", failed: "❌", waiting: "⏳", idle: "💤", paused: "⏸" };
 const BY: Record<string, string> = { model: "🤖", user: "👤", timeout: "⏱", system: "🔄" };
 const MAX_AGENTS = 20;
 const MAX_DECISIONS_SHOWN = 8;
 
-const dot = (name: string): string => {
-	let h = 5381;
+const dot = (s: State, name: string): string => {
+	const i = s.dots?.[name];
+	if (i !== undefined) return PALETTE[i % PALETTE.length];
+	let h = 5381; // fallback for states without assigned dots
 	for (const c of name) h = ((h << 5) + h + c.codePointAt(0)!) >>> 0;
 	return PALETTE[h % PALETTE.length];
 };
@@ -41,7 +43,7 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 	else {
 		L.push("| | Agent | Model | State | Task |", "|---|---|---|---|---|");
 		for (const a of s.agents.slice(0, MAX_AGENTS)) {
-			L.push(`| ${dot(a.name)} | ${e(a.name, 40)} | ${e(a.model, 40)} | ${GLYPH[a.state] ?? "•"} ${a.state} | ${e(a.task)} |`);
+			L.push(`| ${dot(s, a.name)} | ${e(a.name, 40)} | ${e(a.model, 40)} | ${GLYPH[a.state] ?? "•"} ${a.state} | ${e(a.task)} |`);
 		}
 		if (s.agents.length > MAX_AGENTS) L.push("", `_+${s.agents.length - MAX_AGENTS} more_`);
 		L.push("");

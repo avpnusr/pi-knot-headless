@@ -1,7 +1,7 @@
 // pi wiring. Imports nothing from pi so it can be tested with a fake `pi` (see fakepi.ts).
 import { basename } from "node:path";
 import {
-	isInert, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
+	isInert, assignDots, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
 	newComments, mapComment, composeDelivery, timeoutMessage, type State, type AgentRow, type Question, type Severity,
 } from "./core.ts";
 import { loadConfig, type Config } from "./config.ts";
@@ -228,7 +228,7 @@ export function create(pi: any, deps: Deps): Handle {
 		}
 		const kept = st.agents.filter((a) => a.key.startsWith("fg:") || (!live.has(a.key) && (a.state === "done" || a.state === "failed")));
 		const vanished = st.agents.filter((a) => !a.key.startsWith("fg:") && !live.has(a.key) && a.state === "working").map((a) => ({ ...a, state: "done" as const }));
-		st = { ...st, agents: [...kept, ...vanished, ...live.values()].slice(-MAX_ROWS), backgroundRunning: total };
+		st = assignDots({ ...st, agents: [...kept, ...vanished, ...live.values()].slice(-MAX_ROWS), backgroundRunning: total });
 	}
 
 	function readFleet(): Promise<void> {
@@ -319,7 +319,7 @@ export function create(pi: any, deps: Deps): Handle {
 			const a = event.args ?? {};
 			const specs: { agent: string; task: string }[] = Array.isArray(a.tasks) ? a.tasks : Array.isArray(a.chain) ? a.chain : a.agent ? [a] : [];
 			const rows: AgentRow[] = specs.filter((s) => s?.agent).map((s, i) => ({ key: `fg:${event.toolCallId}:${i}`, name: String(s.agent), model: "", state: "working", task: String(s.task ?? "") }));
-			st = { ...st, agents: [...st.agents, ...rows].slice(-MAX_ROWS) };
+			st = assignDots({ ...st, agents: [...st.agents, ...rows].slice(-MAX_ROWS) });
 			void launchTrigger();
 		}
 	}));

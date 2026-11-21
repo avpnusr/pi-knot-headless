@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { newState, askQuestion, logDecision, type State, type AgentRow } from "./core.ts";
+import { newState, askQuestion, logDecision, assignDots, type State, type AgentRow } from "./core.ts";
 import { render, esc } from "./render.ts";
 
 const O = { now: Date.UTC(2026, 10, 21, 14, 30), tz: "UTC" };
@@ -21,7 +21,7 @@ test("same agent name -> same dot; palette dots only", () => {
 	const rows = render(s, O).split("\n").filter((l) => l.startsWith("| ") && /architect|backend/.test(l));
 	const dot = (l: string) => [...l.slice(2)][0];
 	assert.equal(dot(rows[0]), dot(rows[2]));
-	for (const r of rows) assert.ok("🟣🔵🟢🟡🟠🟤⚫⚪".includes(dot(r)));
+	for (const r of rows) assert.ok("🟣🔵🟢🟡🟠🟤".includes(dot(r)));
 });
 
 test("questions: severity chip, numbered options, star, deadline vs none", () => {
@@ -84,4 +84,14 @@ test("esc: single line, truncation, markdown chars", () => {
 	assert.equal(esc("x".repeat(100), 10), "xxxxxxxxx…");
 	assert.equal(esc("a|b"), "a\\|b");
 	assert.ok(esc("[x](http://e)").startsWith("\\[x\\]"));
+});
+
+test("assignDots: first six agents get distinct stable dots, even after rows reorder", () => {
+	const names = ["architect", "backend", "tests", "reviewer", "docs", "debugger"];
+	let s = assignDots({ ...base(), agents: names.map((n) => agent(n)) });
+	const dots = names.map((n) => [...render(s, O).split("\n").find((l) => l.includes(`| ${n} |`))!.slice(2)][0]);
+	assert.equal(new Set(dots).size, 6);
+	s = assignDots({ ...s, agents: [agent("newcomer"), ...s.agents.slice().reverse()] });
+	const again = [...render(s, O).split("\n").find((l) => l.includes("| architect |"))!.slice(2)][0];
+	assert.equal(again, dots[0]);
 });

@@ -71,6 +71,7 @@ export interface State {
 	backgroundRunning: number;
 	mutated: boolean;
 	decidedThisRun: number;
+	dots?: Record<string, number>; // agent name -> palette index, assigned on first sight so dots stay distinct and stable
 	ownIds: string[]; // ids of comments this extension posted (never delivered back, even if owner == agent account)
 }
 
@@ -189,4 +190,19 @@ export function composeDelivery(items: { mapped: Mapped; s: State }[]): string {
 export function timeoutMessage(q: Question, minutes: number): string {
 	const after = minutes % 60 === 0 ? `${minutes / 60} h` : `${minutes} min`;
 	return `${q.id} ${quote(q.text)} unanswered on Knot after ${after}; if the user already decided this elsewhere keep that, otherwise proceed with: ${q.recommended ?? "your best judgement"}`;
+}
+
+export const PALETTE_SIZE = 6;
+
+/** Gives every agent name a stable palette slot on first sight (next free slot, cycling). */
+export function assignDots(s: State): State {
+	const dots = { ...(s.dots ?? {}) };
+	let changed = false;
+	for (const a of s.agents) {
+		if (dots[a.name] === undefined) {
+			dots[a.name] = Object.keys(dots).length % PALETTE_SIZE;
+			changed = true;
+		}
+	}
+	return changed ? { ...s, dots } : s;
 }
