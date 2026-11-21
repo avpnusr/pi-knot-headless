@@ -77,3 +77,8 @@ test("nestedByAgent: counts descendant step nodes below each top-level step; tru
 	assert.equal(nestedByAgent(undefined).size, 0);
 	assert.equal(nestedByAgent({ runs: "nope" }).size, 0);
 });
+
+test("tiny dollar amounts read as < $0.01", () => {
+	const c = { input: 44_000, output: 400, cacheRead: 0, cacheWrite: 0, usd: 0.0012, lowerBound: false, at: 1 };
+	assert.match(render(ended({ cost: c }), O), /usage: 44k tokens in · 400 out · < \$0\.01 list price/);
+});

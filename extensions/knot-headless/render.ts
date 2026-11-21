@@ -93,6 +93,8 @@ function question(q: Question, e: (t: string, max?: number) => string, hm: (ts: 
 	return L;
 }
 
+const fmtUsd = (n: number) => (n < 0.005 ? "< $0.01" : `≈ $${n.toFixed(2)}`);
+
 function outcomeLines(s: State): string[] {
 	const L: string[] = [];
 	const c = s.counts ?? { model: 0, user: 0, timeout: 0 };
@@ -112,9 +114,9 @@ function outcomeLines(s: State): string[] {
 	const k = s.cost;
 	if (k && k.input + k.output + k.cacheRead + k.cacheWrite > 0) {
 		const tin = k.input + k.cacheRead + k.cacheWrite;
-		const usd = k.usd > 0 ? ` · ≈ $${k.usd.toFixed(2)} list price (not your plan bill)` : "";
+		const usd = k.usd > 0 ? ` · ${fmtUsd(k.usd)} list price (not your plan bill)` : "";
 		L.push(`- usage: ${k.lowerBound ? "≥ " : ""}${fmtTokens(tin)} tokens in · ${fmtTokens(k.output)} out${usd}`);
 	}
-	if (s.sum && s.sum.calls > 0) L.push(`- summarizer: ${s.sum.calls} call${s.sum.calls === 1 ? "" : "s"} · ${fmtTokens(s.sum.tokens)} tokens${s.sum.usd > 0 ? ` · ≈ $${s.sum.usd.toFixed(2)}` : ""}`);
+	if (s.sum && s.sum.calls > 0) L.push(`- summarizer: ${s.sum.calls} call${s.sum.calls === 1 ? "" : "s"} · ${fmtTokens(s.sum.tokens)} tokens${s.sum.usd > 0 ? ` · ${fmtUsd(s.sum.usd)}` : ""}`);
 	return L;
 }
