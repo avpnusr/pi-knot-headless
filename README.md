@@ -116,7 +116,7 @@ after a question; the answer arrives as a user message starting `Knot answer to 
 - Pages are not deleted automatically; finished pages stay as an overview. Archive them in Knot when you no longer need them.
 - Subagent launches are shown in the table but not logged as decisions. The agents table comes from pi-subagents' fleet status, which lists at most 16 active children at a time.
 - The dollar figure is pi-subagents' list-price estimate and a lower bound (`≥`) while async children are still unaccounted. On flat plans it is not what you pay; the token counts are the reliable part.
-- Nested counts come from pi-subagents' status snapshot (bounded to 8 children per node, depth 3) and cover active or recent runs.
+- Nested counts come from pi-subagents' nested-event files (found through the `nestedRoute` of the `subagent:async-started` event, read-only, at most 200 files per poll and 5000 per run) and from its status snapshot, whichever is larger. pi-subagents' own snapshot currently loses the nested runs of async launches, so the event files are what shows up live. They cover background (async) launches only; if a pi-subagents release changes the event shape, the count simply disappears.
 - Whether the model logs *every* decision depends on the model following its instructions. The extension adds a `⚠ run ended with no logged decisions` note when a run edited files or ran commands without logging anything.
 
 ## Development

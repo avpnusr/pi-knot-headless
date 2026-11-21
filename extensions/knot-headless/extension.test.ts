@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { harness, FakeKnot, OWNER, BOT, PARENT } from "./fakepi.ts";
+import { harness, FakeKnot, OWNER, BOT, PARENT, makeRoute, ev } from "./fakepi.ts";
 import { KnotAuthError, KnotResponseError } from "./knot.ts";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -773,6 +773,30 @@ test("nested count from the status snapshot lands on the matching row and surviv
 	h.fleet = { entries: [], totalActive: 0 };
 	h.snapshot = undefined;
 	h.pi.events.emit("subagent:jobs-changed", { version: 1 });
+	await h.runTimeouts();
+	assert.deepEqual([h.handle.state().agents[0].state, h.handle.state().agents[0].nested], ["done", 3]);
+});
+
+test("nested count from the async-started route (real-life case: the snapshot has no nested runs) lands on the row and survives completion", async () => {
+	const { writeFileSync } = await import("node:fs");
+	const { join } = await import("node:path");
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const { sink, payload } = makeRoute();
+	h.fleet = { entries: [{ key: "k1", agent: "security-reviewer", model: "opus" }], totalActive: 1 };
+	h.snapshot = { omitted: { children: 0 }, runs: [{ id: "r", kind: "run", children: [{ id: "s", kind: "step", agent: "security-reviewer", state: "running", children: [] }] }] };
+	h.pi.events.emit("subagent:async-started", payload);
+	writeFileSync(join(sink, "1-a.json"), ev("subagent.nested.started", "c1"));
+	writeFileSync(join(sink, "2-b.json"), ev("subagent.nested.started", "c2"));
+	await h.runTimeouts();
+	assert.equal(h.handle.state().agents[0].nested, 2);
+	assert.ok(!JSON.stringify(h.handle.state()).includes("16c8c21f-token") && !JSON.stringify(h.handle.state()).includes(sink)); // nothing of the route is stored
+	assert.ok(!h.knot.replaces.some((md) => md.includes("16c8c21f-token")));
+	writeFileSync(join(sink, "3-c.json"), ev("subagent.nested.started", "c3")); // lands after the row left the fleet
+	h.fleet = { entries: [], totalActive: 0 };
+	h.pi.events.emit("subagent:async-complete", { id: "async1", results: [] });
 	await h.runTimeouts();
 	assert.deepEqual([h.handle.state().agents[0].state, h.handle.state().agents[0].nested], ["done", 3]);
 });

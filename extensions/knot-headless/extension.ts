@@ -6,6 +6,7 @@ import {
 	isInert, assignDots, nestedByAgent, parseCost, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
 	newComments, mapComment, composeDelivery, timeoutMessage, type State, type AgentRow, type Severity,
 } from "./core.ts";
+import { openRoute, pollRoute, routeCounts, type Route } from "./nestedroute.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { createKnot, tokenVarFor, KnotAuthError, KnotResponseError, type Knot } from "./knot.ts";
 import { render, defang } from "./render.ts";
@@ -40,6 +41,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SELF_OWNER_WARNING = "pi-knot-headless: ownerUid is the agent's own Knot account, so anyone holding that token (the agent's shell, subagents) can answer as you. Use a separate bot token for the agent.";
 // Skills (brainstorming, writing-plans, code-review, ...) tell the model to "ask the user" in chat; this keeps those questions on the Knot page too.
 export const KNOT_SKILLS_RULE = "Skills do not change the knot_ask rules: every question, approval gate or choice a skill makes you put to the user (brainstorming, writing-plans, code-review, ...) must ALSO go through knot_ask, never only into the chat. Clarifying questions: normal with a recommended default, or critical when there is no safe default. Approval gates (design/plan approval, 'may I build/merge/delete'): critical with options. Choices a skill lets you make for the user: minor, reason in why. The Knot page cannot see the chat, so make each knot_ask self-contained (question, options, recommendation, path of any spec/plan to read), then stop and wait for the answer. Only if knot_ask is unavailable, ask in the chat.";
+const MAX_ROUTES = 16;
 const SELF_OWNER_TOOL_MESSAGE = "Knot answers are disabled because ownerUid is the agent's own Knot account. Use a separate bot token for the agent, and ask the user directly in this session instead of waiting for a Knot answer.";
 
 export function readGlobalSettings(env: Record<string, string | undefined>): unknown {
@@ -96,6 +98,7 @@ export function create(pi: any, deps: Deps): Handle {
 	let firstPrompt = "";
 	let warnedRun = false;
 	let fleetTimer: unknown;
+	const routes = new Map<string, Route>(); // async id -> nested route (in memory only, holds a capability token)
 	let chain: Promise<unknown> = Promise.resolve();
 	const offs: Array<() => void> = [];
 
@@ -254,6 +257,10 @@ export function create(pi: any, deps: Deps): Handle {
 	// ---- subagent collection --------------------------------------------------
 	function applyFleet(entries: any[], total: number, omitted: number, snapshot?: unknown): void {
 		const nestedMap = nestedByAgent(snapshot);
+		for (const [name, c] of routeCounts(routes.values())) { // the snapshot never carries nested runs in current pi-subagents; keep the larger count so it self-heals upstream
+			const s = nestedMap.get(name);
+			if (!s || c.n >= s.n) nestedMap.set(name, c);
+		}
 		const snap = orchestratorsFromSnapshot(snapshot);
 		const claimed = snap?.length ? claimWorkerEntries(entries, snap) : new Set<string>();
 		const directEntries = snap?.length ? entries.filter((e) => !claimed.has(String(e.key ?? e.agent)) && e.agent !== "workflow") : entries;
@@ -273,7 +280,11 @@ export function create(pi: any, deps: Deps): Handle {
 			live.set(key, { key, name, model: String(e.model ?? ""), state: "working", task, ...(n ? { nested: n, nestedTruncated: seen ? seen.truncated : !!prev?.nestedTruncated } : {}) });
 		}
 		// a row that left the fleet has finished; if the fleet was truncated we cannot tell, so keep it as it was
-		const carried = st.agents.filter((a) => !a.orch && !live.has(a.key)).map((a) => (a.state === "working" && omitted === 0 ? { ...a, state: "done" as const } : a));
+		const carried = st.agents.filter((a) => !a.orch && !live.has(a.key)).map((a) => {
+			const c = nestedMap.get(a.name); // events can land after the row left the fleet
+			const row = c && c.n > (a.nested ?? 0) ? { ...a, nested: c.n, nestedTruncated: c.truncated } : a;
+			return row.state === "working" && omitted === 0 ? { ...row, state: "done" as const } : row;
+		});
 		let all = [...carried, ...live.values()];
 		const dropped = Math.max(0, all.length - MAX_ROWS);
 		all = all.slice(-MAX_ROWS); // only direct rows compete for MAX_ROWS; orchestrator rows are rebuilt below
@@ -307,6 +318,7 @@ export function create(pi: any, deps: Deps): Handle {
 
 	async function readFleet(): Promise<void> {
 		if (!st.pageId || stopped) return;
+		for (const r of routes.values()) if (!r.done) pollRoute(r);
 		const data = await rpc("status");
 		try {
 			const fleet = data?.fleet;
@@ -399,6 +411,7 @@ export function create(pi: any, deps: Deps): Handle {
 	// ---- events ---------------------------------------------------------------
 	pi.on("session_start", guard(async (event: any, ctx: any) => {
 		launches = [];
+		routes.clear();
 		ctxRef = ctx;
 		stopped = false;
 		gen++;
@@ -497,10 +510,19 @@ export function create(pi: any, deps: Deps): Handle {
 		void summarize().then(() => handle.tick()).catch(log); // independent of the cost read: pi-subagents may be absent
 	}));
 
-	onEvent("subagent:async-started", guard(() => { void launchTrigger().then(scheduleFleet); }));
+	onEvent("subagent:async-started", guard((p: any) => {
+		const r = openRoute(p);
+		if (r && typeof p?.id === "string") {
+			routes.set(p.id, r);
+			if (routes.size > MAX_ROUTES) routes.delete(routes.keys().next().value as string);
+		}
+		void launchTrigger().then(scheduleFleet);
+	}));
 	onEvent("subagent:child-status", guard(() => scheduleFleet()));
 	onEvent("subagent:jobs-changed", guard(() => scheduleFleet()));
 	onEvent("subagent:async-complete", guard((p: any) => {
+		const r = routes.get(String(p?.id));
+		if (r) { pollRoute(r); r.done = true; } // last read; the count stays on the row
 		const failed = new Set((Array.isArray(p?.results) ? p.results : []).filter((r: any) => /fail|error|time/i.test(String(r?.status))).map((r: any) => String(r.agent)));
 		// jobs-changed usually arrives first and has already turned the row "done", so flip done -> failed too
 		if (failed.size) st = { ...st, agents: st.agents.map((a) => (failed.has(a.name) && a.state !== "failed" ? { ...a, state: "failed" as const } : a)) };
