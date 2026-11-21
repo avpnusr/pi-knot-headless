@@ -81,6 +81,14 @@ export interface Cost {
 	lowerBound: boolean; // some async children were not accounted yet
 	at: number;
 }
+export interface NestedCost {
+	runs: number;
+	input: number; // input/output only: pi-subagents' nested events carry no cache counts
+	output: number;
+	usd: number; // list-price estimate from each finished run's status.json
+	lowerBound: boolean; // some nested runs were still running or had no cost yet
+	at: number;
+}
 export interface State {
 	version: 1;
 	pageId?: string;
@@ -107,6 +115,7 @@ export interface State {
 	runs?: number; // settled runs
 	agentsDropped?: number; // rows pushed out of the capped agents list
 	cost?: Cost;
+	nestedCost?: NestedCost;
 	summary?: { text: string; model: string; at: number };
 	summaryFp?: string;
 	sum?: { calls: number; tokens: number; usd: number; attempts?: number }; // our own accounting of summarizer calls

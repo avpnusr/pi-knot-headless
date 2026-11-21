@@ -7,7 +7,7 @@ import {
 	newComments, mapComment, composeDelivery, timeoutMessage, type State, type AgentRow, type Severity,
 } from "./core.ts";
 import { openAsyncDir, readStepTexts } from "./steptexts.ts";
-import { openRoute, pollRoute, routeCounts, type Route } from "./nestedroute.ts";
+import { openRoute, pollRoute, routeCounts, nestedUsage, type Route } from "./nestedroute.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { createKnot, tokenVarFor, KnotAuthError, KnotResponseError, type Knot } from "./knot.ts";
 import { render, defang } from "./render.ts";
@@ -318,9 +318,15 @@ export function create(pi: any, deps: Deps): Handle {
 		});
 	}
 
+	function updateNestedCost() {
+		const u = nestedUsage(routes.values());
+		if (u.runs > 0) st = { ...st, nestedCost: { runs: u.runs, input: u.input, output: u.output, usd: u.usd, lowerBound: u.pending > 0, at: deps.now() } };
+	}
+
 	async function readFleet(): Promise<void> {
 		if (!st.pageId || stopped) return;
 		for (const r of routes.values()) if (!r.done) pollRoute(r);
+		updateNestedCost();
 		for (const w of wfDirs.values()) if (!w.done) w.texts = readStepTexts(w.dir);
 		const data = await rpc("status");
 		try {
@@ -465,6 +471,7 @@ export function create(pi: any, deps: Deps): Handle {
 			st = { ...st, phase: "ended", lastBeat: deps.now() };
 			persist();
 		}
+		if (finalWrite) await Promise.race([readCost(), deps.sleep(2500)]); // children that finished after the last settled run
 		if (finalWrite) await Promise.race([summarize(true), deps.sleep(3500)]); // bounded: the process may be going down
 		const write = finalWrite ? serial(() => writePage(true)).catch(log) : Promise.resolve();
 		stopped = true;
@@ -533,7 +540,9 @@ export function create(pi: any, deps: Deps): Handle {
 		const r = routes.get(String(p?.id));
 		const w = wfDirs.get(String(p?.id));
 		if (w) { w.texts = readStepTexts(w.dir); w.done = true; }
-		if (r) { pollRoute(r); r.done = true; } // last read; the count stays on the row
+		if (r) { pollRoute(r); r.done = true; updateNestedCost(); } // last read; the count stays on the row
+		// the completion notice reaches the session shortly after this event, and only then can the cost RPC resolve this run
+		if (st.pageId) deps.setTimeout(() => { void readCost().then(() => handle.tick()).catch(log); }, 3000);
 		const failed = new Set((Array.isArray(p?.results) ? p.results : []).filter((r: any) => /fail|error|time/i.test(String(r?.status))).map((r: any) => String(r.agent)));
 		// jobs-changed usually arrives first and has already turned the row "done", so flip done -> failed too
 		if (failed.size) st = { ...st, agents: st.agents.map((a) => (failed.has(a.name) && a.state !== "failed" ? { ...a, state: "failed" as const } : a)) };

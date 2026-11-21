@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Subagent and nested costs reach the page.** The cost is now re-read a few seconds after every subagent completion and once more before the final write (it was only read when the head's turn settled, so subagents that finished later were missing). Nested runs, which pi-subagents' cost report never includes, get their own `nested runs` line: input/output tokens from the nested event files and the list-price estimate from each finished run's `status.json`. Both lines now also show while the session runs, in a *Usage so far* section.
+
 - **Task column for scripted workflows.** Workers of a scripted workflow (`workflow: true`) now show a task excerpt instead of just the step label. It is read from the `sessionName` pi-subagents stores in the workflow's `status.json` (found through the `asyncDir` of the `subagent:async-started` event; read-only, validated path, size cap). Launch-argument text still wins when available.
 
 ## [0.2.1] - 2026-11-21

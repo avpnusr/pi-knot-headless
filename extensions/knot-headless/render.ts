@@ -68,6 +68,11 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 		L.push("");
 	}
 
+	if (s.phase !== "ended") {
+		const u = usageLines(s);
+		if (u.length) L.push("## 💰 Usage so far", "", ...u, "");
+	}
+
 	L.push("## 📝 Decisions reported", "");
 	if (s.decisions.length === 0) L.push("_none yet_", "");
 	else {
@@ -140,6 +145,23 @@ function question(q: Question, e: (t: string, max?: number) => string, hm: (ts: 
 
 const fmtUsd = (n: number) => (n < 0.005 ? "< $0.01" : `≈ $${n.toFixed(2)}`);
 
+// head + direct subagents from the cost RPC; nested runs come from pi-subagents' nested event files (input/output only, no cache counts)
+function usageLines(s: State): string[] {
+	const L: string[] = [];
+	const k = s.cost;
+	if (k && k.input + k.output + k.cacheRead + k.cacheWrite > 0) {
+		const tin = k.input + k.cacheRead + k.cacheWrite;
+		const usd = k.usd > 0 ? ` · ${fmtUsd(k.usd)} list price (not your plan bill)` : "";
+		L.push(`- usage: ${k.lowerBound ? "≥ " : ""}${fmtTokens(tin)} tokens in · ${fmtTokens(k.output)} out${usd}`);
+	}
+	const n = s.nestedCost;
+	if (n && n.runs > 0) {
+		const usd = n.usd > 0 ? ` · ${fmtUsd(n.usd)} list price` : "";
+		L.push(`- nested runs (not in the usage above): ${n.runs} · ${n.lowerBound ? "≥ " : ""}${fmtTokens(n.input)} in · ${fmtTokens(n.output)} out (cache not counted)${usd}`);
+	}
+	return L;
+}
+
 function outcomeLines(s: State): string[] {
 	const L: string[] = [];
 	const c = s.counts ?? { model: 0, user: 0, timeout: 0 };
@@ -156,12 +178,7 @@ function outcomeLines(s: State): string[] {
 	if (c.user) parts.push(`${c.user} 👤 answer${c.user === 1 ? "" : "s"}`);
 	if (c.timeout) parts.push(`${c.timeout} ⏱ timed out`);
 	if (parts.length) L.push(`- outcome: ${parts.join(" · ")}`);
-	const k = s.cost;
-	if (k && k.input + k.output + k.cacheRead + k.cacheWrite > 0) {
-		const tin = k.input + k.cacheRead + k.cacheWrite;
-		const usd = k.usd > 0 ? ` · ${fmtUsd(k.usd)} list price (not your plan bill)` : "";
-		L.push(`- usage: ${k.lowerBound ? "≥ " : ""}${fmtTokens(tin)} tokens in · ${fmtTokens(k.output)} out${usd}`);
-	}
+	L.push(...usageLines(s));
 	if (s.sum && s.sum.calls > 0) L.push(`- summarizer: ${s.sum.calls} call${s.sum.calls === 1 ? "" : "s"} · ${fmtTokens(s.sum.tokens)} tokens${s.sum.usd > 0 ? ` · ${fmtUsd(s.sum.usd)}` : ""}`);
 	return L;
 }

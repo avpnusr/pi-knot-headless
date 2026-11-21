@@ -816,6 +816,36 @@ test("nested count from the async-started route (real-life case: the snapshot ha
 	assert.deepEqual([h.handle.state().agents[0].state, h.handle.state().agents[0].nested], ["done", 3]);
 });
 
+test("cost is re-read after an async completion and at shutdown; nested usage lands on the page while running", async () => {
+	const { mkdirSync, writeFileSync } = await import("node:fs");
+	const { join } = await import("node:path");
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const { sink, runsDir, payload } = makeRoute();
+	h.cost = { total: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.1 }, unresolvedAsyncChildren: 1 };
+	h.pi.events.emit("subagent:async-started", payload);
+	writeFileSync(join(sink, "1-a.json"), ev("subagent.nested.completed", "c1", { state: "complete", totalTokens: { input: 2, output: 297 } }));
+	mkdirSync(join(runsDir, "c1"), { recursive: true });
+	writeFileSync(join(runsDir, "c1", "status.json"), JSON.stringify({ totalCost: { costUsd: 0.5 } }));
+	h.fleet = { entries: [{ key: "k1", agent: "security-reviewer", model: "opus" }], totalActive: 1 };
+	await h.runTimeouts();
+	assert.deepEqual(h.handle.state().nestedCost && [h.handle.state().nestedCost!.runs, h.handle.state().nestedCost!.output, h.handle.state().nestedCost!.usd], [1, 297, 0.5]);
+	await h.handle.tick(true);
+	assert.match(h.knot.replaces.at(-1)!, /## 💰 Usage so far[\s\S]*nested runs \(not in the usage above\): 1 · 2 in · 297 out/);
+	// the async child finishes later: the completion event triggers a delayed cost re-read that now resolves it
+	h.cost = { total: { input: 40, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.4 }, unresolvedAsyncChildren: 0 };
+	h.pi.events.emit("subagent:async-complete", { id: "async1", results: [] });
+	await h.runTimeouts();
+	assert.deepEqual([h.handle.state().cost!.input, h.handle.state().cost!.lowerBound], [40, false]);
+	// a final read at shutdown picks up usage that arrived after the last settle
+	h.cost = { total: { input: 90, output: 30, cacheRead: 0, cacheWrite: 0, cost: 0.9 }, unresolvedAsyncChildren: 0 };
+	await h.fire("session_shutdown", { reason: "quit" });
+	assert.equal(h.handle.state().cost!.input, 90);
+	assert.match(h.knot.replaces.at(-1)!, /usage: 90 tokens in/);
+});
+
 const SUM = { url: "https://knot.example.com", parentPageId: PARENT, ownerUid: OWNER, summarizer: { enabled: true, model: "ollama-cloud/glm-5.3-flash", title: true } };
 const minor = { question: "tabs?", recommended: "spaces", severity: "minor" };
 async function withSummarizer(settings: any = SUM) {

@@ -45,10 +45,23 @@ test("usage: lower bound prefix, no dollars when cost is 0, absent when unknown"
 	assert.ok(!render(ended(), O).includes("usage:"));
 });
 
-test("running/idle pages do not show the outcome or usage lines", () => {
-	const s = { ...base(), phase: "idle" as const, cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, usd: 1, lowerBound: false, at: 1 } };
-	const out = render(s, O);
-	assert.ok(!out.includes("usage:") && !out.includes("outcome:"));
+test("running/idle pages show a small usage section, but no outcome line", () => {
+	const cost = { input: 1000, output: 1000, cacheRead: 0, cacheWrite: 0, usd: 1, lowerBound: false, at: 1 };
+	const nestedCost = { runs: 2, input: 4, output: 563, usd: 0.5, lowerBound: true, at: 1 };
+	for (const phase of ["running", "idle"] as const) {
+		const out = render({ ...base(), phase, cost, nestedCost }, O);
+		assert.match(out, /## 💰 Usage so far/);
+		assert.match(out, /- usage: 1\.0k tokens in · 1\.0k out · ≈ \$1\.00 list price/);
+		assert.match(out, /- nested runs \(not in the usage above\): 2 · ≥ 4 in · 563 out \(cache not counted\) · ≈ \$0\.50 list price/);
+		assert.ok(!out.includes("outcome:") && !out.includes("## ✅ Summary"));
+	}
+	assert.ok(!render({ ...base(), phase: "running" }, O).includes("Usage so far")); // nothing to show: no section
+});
+
+test("ended summary carries the nested usage line too, once", () => {
+	const out = render(ended({ nestedCost: { runs: 1, input: 2, output: 297, usd: 0, lowerBound: false, at: 1 } }), O);
+	assert.equal(out.match(/nested runs \(not in the usage above\)/g)?.length, 1);
+	assert.ok(!out.includes("Usage so far"));
 });
 
 test("nested count shows on the row and in the ended summary; truncated source gets a plus", () => {

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, symlinkSync } from "node:fs";
+import { writeFileSync, symlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { openRoute, pollRoute, routeCounts } from "./nestedroute.ts";
+import { openRoute, pollRoute, routeCounts, nestedUsage } from "./nestedroute.ts";
 import { makeRoute, ev, ROOT } from "./fakepi.ts";
 
 test("openRoute accepts only <..>/nested-subagent-events/<root>-<token>/events", () => {
@@ -53,4 +53,28 @@ test("pollRoute caps files per poll and marks the route truncated at the route c
 	writeFileSync(join(sink, "9999-late.json"), ev("subagent.nested.started", "late"));
 	pollRoute(r);
 	assert.equal(routeCounts([r]).get("security-reviewer")!.truncated, true);
+});
+
+test("nestedUsage: tokens from the events, usd from each finished run's status.json, running or cost-less runs are pending", () => {
+	const { payload, sink, runsDir } = makeRoute();
+	const r = openRoute(payload)!;
+	const status = (id: string, costUsd: number) => { mkdirSync(join(runsDir, id), { recursive: true }); writeFileSync(join(runsDir, id, "status.json"), JSON.stringify({ totalCost: { costUsd } })); };
+	writeFileSync(join(sink, "1-a.json"), ev("subagent.nested.started", "c1", { totalTokens: { input: 2, output: 100 } }));
+	writeFileSync(join(sink, "2-b.json"), ev("subagent.nested.completed", "c1", { state: "complete", totalTokens: { input: 2, output: 266 } }));
+	writeFileSync(join(sink, "3-c.json"), ev("subagent.nested.completed", "c2", { state: "complete", totalTokens: { input: 2, output: 297 } }));
+	writeFileSync(join(sink, "4-d.json"), ev("subagent.nested.started", "c3", { totalTokens: { input: 5, output: 7 } })); // still running
+	status("c1", 0.25);
+	pollRoute(r);
+	assert.deepEqual(nestedUsage([r]), { runs: 3, input: 9, output: 570, usd: 0.25, pending: 2 }); // c2 has no status.json yet, c3 runs
+	status("c2", 0.5);
+	pollRoute(r);
+	assert.deepEqual(nestedUsage([r]), { runs: 3, input: 9, output: 570, usd: 0.75, pending: 1 });
+	assert.equal(nestedUsage([r, r]).runs, 3); // the same child id is counted once
+	for (const bad of [{ totalCost: { costUsd: -1 } }, { totalCost: { costUsd: "x" } }]) { // hostile status.json: no usd, no crash
+		const t = makeRoute(); const rr = openRoute(t.payload)!;
+		mkdirSync(join(t.runsDir, "c9"), { recursive: true }); writeFileSync(join(t.runsDir, "c9", "status.json"), JSON.stringify(bad));
+		writeFileSync(join(t.sink, "1.json"), ev("subagent.nested.completed", "c9", { state: "complete" }));
+		pollRoute(rr);
+		assert.deepEqual(nestedUsage([rr]), { runs: 1, input: 0, output: 0, usd: 0, pending: 1 });
+	}
 });

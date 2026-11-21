@@ -84,6 +84,7 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 	h.pi.events.on("subagents:rpc:v1:request", (req: any) => {
 		const data = req.method === "cost" ? h.cost : { fleet: h.fleet, asyncSnapshot: h.snapshot };
 		if (data !== undefined) h.pi.events.emit(`subagents:rpc:v1:reply:${req.requestId}`, { version: 1, requestId: req.requestId, success: true, data });
+		else if (req.method === "cost") h.pi.events.emit(`subagents:rpc:v1:reply:${req.requestId}`, { version: 1, requestId: req.requestId, success: false, error: { code: "execution_failed", message: "no usage" } });
 	});
 	return h;
 }
@@ -114,9 +115,10 @@ export function harness(o: { settings?: any; env?: Record<string, string>; entri
 export const ROOT = "0eeeeeee-0000-4000-8000-000000000004";
 export function makeRoute() {
 	const base = mkdtempSync(join(tmpdir(), "nr-"));
-	const sink = join(base, "nested-subagent-events", `${ROOT}-16c8c21f-token`, "events");
+	const sink = join(base, "pi-subagents-uid-1", "nested-subagent-events", `${ROOT}-16c8c21f-token`, "events");
 	mkdirSync(sink, { recursive: true });
-	return { sink, payload: { id: "async1", nestedRoute: { rootRunId: ROOT, eventSink: sink, capabilityToken: "16c8c21f-token" } } };
+	const runsDir = join(base, "pi-subagents-uid-1", "nested-subagent-runs", ROOT);
+	return { sink, runsDir, payload: { id: "async1", nestedRoute: { rootRunId: ROOT, eventSink: sink, capabilityToken: "16c8c21f-token" } } };
 }
 // shape taken from real pi-subagents events (reduced)
 export const ev = (type: string, id: string, extra: any = {}, root = ROOT) => JSON.stringify({ type, ts: 1, rootRunId: root, parentRunId: "d5bd9fe3", child: { id, depth: 1, state: "running", path: [{ runId: "d5bd9fe3", stepIndex: 0, agent: "security-reviewer" }], ...extra } });
