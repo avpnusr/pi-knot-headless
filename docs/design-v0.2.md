@@ -72,3 +72,10 @@ Exact wording/emoji of the new lines, prompt text, internal module split (`summa
 5. Nested shown as a count only.
 6. Title rewriting is part of the opt-in summarizer and dropped if `PATCH` doesn't work.
 7. Spikes A0/C0 (status snapshot nested field, `complete` shape, `PATCH` rename) come before any implementation; their results may adjust this doc.
+
+## Spike results (2026-11-21, real pi 1.6 + pi-subagents)
+- **Cost RPC** shape confirmed: `data.total = {input, output, cacheRead, cacheWrite, cost, turns}`, `unresolvedAsyncChildren`, per-child rows. Works after a foreground `explorer` run.
+- **Nested (A0):** RPC `status` returns `asyncSnapshot.runs[]` = a tree of nodes `{id, kind, label, state, agent?, model?, children?}`; top-level step nodes carry `agent`, nested runs hang under them in `children` (bounded: 8 children per node, depth 3, `omitted.children` counts what was cut). Nested count per agent row = number of descendant step nodes (nodes with `agent`) below the matching top-level step; `omitted.children > 0` → shown as `N+`. Only active/recent runs are in the snapshot, so a row keeps the last seen count after it finishes. Not live-verified with a real fan-out (needs an Opus `security-reviewer` run); covered by fixtures built from the documented node shape.
+- **`complete()` (C0):** `ctx.modelRegistry.find("ollama-cloud","glm-5.3-flash")` + `complete(model, {systemPrompt, messages:[{role:"user", content:[{type:"text",text}], timestamp}]}, {signal})` returns an `AssistantMessage` with `content[].text`, `usage.{input,output,totalTokens}` and `usage.cost.total` (USD). Works; 1 s.
+- **Rename (C0):** `PATCH /api/docs/{id} {"title"}` → 200 and the title changes (tested on an unrestricted page, archived afterwards). Title feature stays in.
+- **Side finding:** pages can only be created by a bot below an *unrestricted, non-restricted-subtree* page. "AI Agentic Projects" was restricted after v0.1 shipped, which broke the configured parent; the user is asked where session pages should live.
