@@ -30,6 +30,12 @@ test("redact: a whole PEM block, AWS/Slack/Google keys", () => {
 	assert.ok(redact("-----BEGIN PRIVATE KEY-----\nabcdef", []).indexOf("abcdef") < 0); // unterminated block: cut to the end
 });
 
+test("redact: GitHub fine-grained PAT, Stripe, GitLab, npm tokens", () => {
+	const out = redact(`a github_pat_${"A".repeat(30)} b rk_live_${"A".repeat(24)} c sk_test_${"A".repeat(24)} d glpat-${"A".repeat(24)} e npm_${"A".repeat(36)} f`, []);
+	for (const bad of ["github_pat_", "rk_live_", "sk_test_", "glpat-", "npm_"]) assert.ok(!out.includes(bad), `still contains ${bad}`);
+	assert.ok(out.includes("[redacted]"));
+});
+
 test("redact: normal text untouched; secret chars are not a regex", () => {
 	assert.equal(redact("hello world, task 42", []), "hello world, task 42");
 	assert.equal(redact("x a.b*c+d y", ["a.b*c+d"]), "x [redacted] y");

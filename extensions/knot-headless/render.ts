@@ -1,14 +1,21 @@
-import { redact, fmtTokens, type State, type Question } from "./core.ts";
+import { redact, fmtTokens, type State, type Question, type AgentRow, type Orchestrator } from "./core.ts";
 
 export function esc(text: string, max = 80): string {
 	let t = String(text).replace(/\s+/g, " ").trim();
 	if (t.length > max) t = `${t.slice(0, max - 1)}…`;
-	return t.replace(/([\\`*_{}\[\]<>#|~@])/g, "\\$1").replace(/:\/\//g, ":\\//").replace(/\bwww\./gi, "www\u200b."); // no live links, mentions or images
+	return t.replace(/([\\`*_{}\[\]<>#|~@])/g, "\\$1").replace(/:\/\//g, ":\\//").replace(/www\./gi, "www\u200b."); // no live links, mentions or images
 }
 
 /** For plain-text comment bodies: neutralise image/link syntax, bare URLs and @mentions without adding backslashes everywhere. */
 export function defang(text: string): string {
-	return text.replace(/!\[/g, "! [").replace(/\]\(/g, "] (").replace(/:\/\//g, ":\\//").replace(/@/g, "@\u200b");
+	return text
+		.replace(/!\[/g, "! [")
+		.replace(/\]\(/g, "] (")
+		.replace(/\/(?=\/)/g, "/\u200b") // every // in a run of slashes
+		.replace(/\]:/g, "] :") // no reference-link definitions
+		.replace(/www\./gi, "www\u200b.")
+		.replace(/</g, "<\u200b")
+		.replace(/@/g, "@\u200b");
 }
 
 const PALETTE = ["🟣", "🔵", "🟢", "🟡", "🟠", "🟤"]; // colored circles that render as emoji everywhere (⚫⚪ fall back to text glyphs)
@@ -26,6 +33,11 @@ const dot = (s: State, name: string): string => {
 	return PALETTE[h % PALETTE.length];
 };
 const code = (t: string, max = 60): string => `\`${String(t).replace(/[`\n\r]/g, " ").trim().slice(0, max)}\``;
+
+const agentRow = (s: State, a: AgentRow, e: (t: string, max?: number) => string): string => {
+	const nested = a.nested ? ` +${a.nested}${a.nestedTruncated ? "+" : ""} nested` : "";
+	return `| ${dot(s, a.name)} | ${e(a.name, 40)}${nested} | ${e(a.model, 40)} | ${GLYPH[a.state] ?? "•"} ${a.state} | ${e(a.task)} |`;
+};
 
 export function render(s: State, o: { now: number; tz?: string; secrets?: string[] }): string {
 	const secrets = o.secrets ?? [];
@@ -47,13 +59,11 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 	if (s.questions.length > MAX_QUESTIONS) L.push(`_+${s.questions.length - MAX_QUESTIONS} more questions_`, "");
 
 	L.push("## 🤖 Agents", "");
-	if (s.agents.length === 0) L.push("_no subagents yet_", "");
+	if (s.orchestrators?.length) L.push(...agentGroups(s, e));
+	else if (s.agents.length === 0) L.push("_no subagents yet_", "");
 	else {
 		L.push("| | Agent | Model | State | Task |", "|---|---|---|---|---|");
-		for (const a of s.agents.slice(-MAX_AGENTS)) {
-			const nested = a.nested ? ` +${a.nested}${a.nestedTruncated ? "+" : ""} nested` : "";
-			L.push(`| ${dot(s, a.name)} | ${e(a.name, 40)}${nested} | ${e(a.model, 40)} | ${GLYPH[a.state] ?? "•"} ${a.state} | ${e(a.task)} |`);
-		}
+		for (const a of s.agents.slice(-MAX_AGENTS)) L.push(agentRow(s, a, e));
 		if (s.agents.length > MAX_AGENTS) L.push("", `_+${s.agents.length - MAX_AGENTS} older not shown_`);
 		L.push("");
 	}
@@ -80,6 +90,41 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 
 	L.push("## 💬 How to answer", "", "Reply **in the question's comment thread**, or comment `Q1 2` (option 2) / `Q1: your text`. Any other comment is sent to the session as a message.", "");
 	return L.join("\n");
+}
+
+/** Agents section with groups: collapsed bullets first (ascending n), then expanded sections (every running + the highest-n other), then Direct subagents. */
+function agentGroups(s: State, e: (t: string, max?: number) => string): string[] {
+	const orchs = [...s.orchestrators!].sort((a, b) => a.n - b.n);
+	const lastRest = Math.max(...orchs.filter((o) => o.state !== "running").map((o) => o.n));
+	const expanded = (o: Orchestrator) => o.state === "running" || o.n === lastRest;
+	const workers = (o: Orchestrator) => `${o.workers}${o.truncated ? "+" : ""} ${o.workers === 1 ? "worker" : "workers"}`;
+	const known = new Set(orchs.map((o) => o.id));
+	const direct = s.agents.filter((a) => !a.orch || !known.has(a.orch));
+	const expOrchs = orchs.filter(expanded);
+	// one cap for the whole page, in page order (expanded workers by ascending n, then direct rows) — the grouped view must not grow past the flat view's 20 rows
+	const candidates = [...expOrchs.flatMap((o) => s.agents.filter((a) => a.orch === o.id)), ...direct];
+	const visible = new Set(candidates.slice(-MAX_AGENTS));
+	const table = (title: string, col: string, rows: AgentRow[]): string[] => {
+		const L = [title, "", `| | ${col} | Model | State | Task |`, "|---|---|---|---|---|"];
+		for (const a of rows) if (visible.has(a)) L.push(agentRow(s, a, e));
+		L.push("");
+		return L;
+	};
+	const L: string[] = [];
+	for (const o of orchs) if (!expanded(o)) {
+		const mins = o.startedAt === undefined || o.endedAt === undefined ? "" : ` · ${Math.max(0, Math.round((o.endedAt - o.startedAt) / 60_000))} min`;
+		L.push(`- ${o.state === "failed" ? "❌" : "✅"} Orchestrator ${o.n} · ${workers(o)}${mins}`);
+	}
+	if (L.length) L.push("");
+	for (const o of expOrchs) {
+		const label = o.state === "running" ? "▶ running" : o.state === "done" ? "✅ done" : "❌ failed";
+		L.push(...table(`### 🎛 Orchestrator ${o.n} · ${label} · ${workers(o)}`, "Worker", s.agents.filter((a) => a.orch === o.id)));
+		if (o.truncated) L.push("_+ more workers not shown_", "");
+	}
+	if (direct.length) L.push(...table("### Direct subagents", "Agent", direct));
+	const hidden = candidates.length - visible.size;
+	if (hidden > 0) L.push(`_+${hidden} older not shown_`, "");
+	return L;
 }
 
 function question(q: Question, e: (t: string, max?: number) => string, hm: (ts: number) => string): string[] {

@@ -1,0 +1,143 @@
+// Pure logic: turn the pi-subagents async status snapshot into orchestrator groups. No I/O.
+import type { AgentRow, Orchestrator, State } from "./core.ts";
+
+export interface SnapWorker { key: string; label: string; agent: string; model: string; state: AgentRow["state"]; startedAt?: number; nested: number; nestedTruncated: boolean }
+export interface SnapOrch { id: string; state: Orchestrator["state"]; startedAt?: number; endedAt?: number; truncated: boolean; workers: SnapWorker[] }
+export interface Launch { at: number; id?: string; tasks: string[]; agents: string[] }
+
+const MAX_ORCH = 20;
+const MAX_LAUNCHES = 16;
+const LAUNCH_TTL_MS = 600_000;
+const CLAIM_WINDOW_MS = 60_000;
+const MAX_TASK = 200;
+
+export function mapSnapState(v: unknown): AgentRow["state"] {
+	if (v === "running") return "working";
+	if (v === "queued") return "waiting";
+	if (v === "complete") return "done";
+	if (v === "paused") return "paused";
+	if (v === "failed" || v === "partial" || v === "stopped" || v === "rejected") return "failed";
+	return "idle";
+}
+
+// the fleet reports "provider/id:thinking", the snapshot just "provider/id"
+const baseModel = (m: unknown): string => String(m ?? "").replace(/:(off|minimal|low|medium|high|xhigh|max)$/, "");
+
+const finite = (x: unknown): number | undefined => (typeof x === "number" && Number.isFinite(x) ? x : undefined);
+
+// descendants (any depth) that have an agent, for the +N nested count
+function agentDescendants(node: any): number {
+	let n = 0;
+	for (const c of Array.isArray(node?.children) ? node.children : []) {
+		if (typeof c?.agent === "string") n++;
+		n += agentDescendants(c);
+	}
+	return n;
+}
+
+export function orchestratorsFromSnapshot(snapshot: any): SnapOrch[] | undefined {
+	if (!snapshot || !Array.isArray(snapshot.runs)) return undefined;
+	const cap = snapshot.caps?.maxChildrenPerNode ?? 8;
+	const out: SnapOrch[] = [];
+	for (const r of snapshot.runs) {
+		if (r?.kind !== "workflow" || typeof r.id !== "string" || !r.id) continue;
+		const children = Array.isArray(r.children) ? r.children : [];
+		const workers: SnapWorker[] = [];
+		for (const c of children) {
+			if (c?.kind !== "step" || typeof c.agent !== "string" || typeof c.id !== "string" || !c.id) continue;
+			workers.push({
+				key: c.id, label: String(c.label ?? ""), agent: c.agent, model: String(c.model ?? ""),
+				state: mapSnapState(c.state), startedAt: finite(c.startedAt), nested: agentDescendants(c),
+				nestedTruncated: (Array.isArray(c.children) ? c.children.length : 0) >= cap,
+			});
+		}
+		out.push({
+			id: r.id,
+			state: r.state === "complete" ? "done" : r.state === "queued" || r.state === "running" || r.state === "paused" ? "running" : "failed",
+			startedAt: finite(r.startedAt), endedAt: finite(r.endedAt), truncated: children.length >= cap, workers,
+		});
+	}
+	return out;
+}
+
+/** Keys of fleet entries that duplicate a snapshot worker (same agent + model, nearest start time). */
+export function claimWorkerEntries(entries: any[], orchs: SnapOrch[]): Set<string> {
+	const claimed = new Set<string>();
+	for (const o of orchs) {
+		for (const w of o.workers) {
+			if ((w.state !== "working" && w.state !== "paused") || finite(w.startedAt) === undefined) continue;
+			let best: string | undefined;
+			let bestD = Infinity;
+			for (const e of entries) {
+				const key = String(e?.key ?? e?.agent ?? "");
+				const startedAt = finite(e?.startedAt);
+				if (!key || claimed.has(key) || startedAt === undefined || String(e?.agent ?? "") !== w.agent || baseModel(e?.model) !== baseModel(w.model)) continue;
+				const d = Math.abs(startedAt - w.startedAt!);
+				if (d <= CLAIM_WINDOW_MS && d < bestD) { best = key; bestD = d; }
+			}
+			if (best !== undefined) claimed.add(best);
+		}
+	}
+	return claimed;
+}
+
+export function launchFromArgs(args: any, now: number, id?: string): Launch | undefined {
+	if (!args?.workflow || args.action) return undefined;
+	const tasks = Array.isArray(args?.args?.tasks) ? args.args.tasks.slice(0, 64) : [];
+	return {
+		at: now, ...(id === undefined ? {} : { id }),
+		tasks: tasks.map((t: any) => String(t?.task ?? "").slice(0, MAX_TASK)),
+		agents: tasks.map((t: any) => String(t?.agent ?? "").slice(0, MAX_TASK)),
+	};
+}
+
+export function addLaunch(list: Launch[], l: Launch, now: number): Launch[] {
+	return [...list.filter((x) => now - x.at < LAUNCH_TTL_MS), l].slice(-MAX_LAUNCHES);
+}
+
+export function applyOrchestrators(s: State, snap: SnapOrch[], o: { launches: Launch[]; now: number; omitted: boolean }): { state: State; launches: Launch[] } {
+	const prevOrch = new Map((s.orchestrators ?? []).map((x) => [x.id, x]));
+	const prevRow = new Map(s.agents.map((a) => [a.key, a]));
+	const direct = s.agents.filter((a) => !a.orch); // (g) rows without an orchestrator are never touched
+	let launches = o.launches;
+	let next = s.nextOrch ?? 1;
+	const orchs: Orchestrator[] = [];
+	const rows: AgentRow[] = [];
+	for (const so of [...snap].sort((a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity))) { // (a) oldest first
+		const prev = prevOrch.get(so.id);
+		let texts: string[] | undefined;
+		let n = prev?.n;
+		if (n === undefined) { // (b)+(c) a new orchestrator takes the oldest launch that fits its lane count
+			n = next++;
+			const i = launches.findIndex((l) => l.tasks.length > 0
+				&& (so.truncated ? l.tasks.length >= so.workers.length : l.tasks.length === so.workers.length)
+				&& l.agents.length >= so.workers.length && so.workers.every((w, i) => w.agent === l.agents[i])
+				&& (so.startedAt === undefined || (l.at <= so.startedAt + 5_000 && so.startedAt - l.at < LAUNCH_TTL_MS)));
+			if (i >= 0) { launches = [...launches]; texts = launches.splice(i, 1)[0].tasks; }
+		}
+		orchs.push({ id: so.id, n, state: so.state, workers: so.workers.length, startedAt: so.startedAt, endedAt: so.endedAt ?? prev?.endedAt, truncated: so.truncated });
+		for (const [i, w] of so.workers.entries()) { // (d) worker rows are rebuilt on every call
+			const rk = `${so.id}:${w.key}`;
+			const t = texts?.[/^task-(\d+)$/.test(w.key) ? Number(w.key.slice(5)) - 1 : i];
+			const task = t !== undefined ? t.replace(/\s+/g, " ").trim().slice(0, MAX_TASK) : prevRow.get(rk)?.task ?? w.label;
+			rows.push({ key: rk, name: w.agent, model: w.model, state: w.state, task, orch: so.id, ...(w.nested > 0 ? { nested: w.nested, nestedTruncated: w.nestedTruncated } : {}) });
+		}
+	}
+	// (e) an orchestrator absent from the snapshot has finished, unless the snapshot itself was truncated
+	const seen = new Set(snap.map((x) => x.id));
+	for (const old of s.orchestrators ?? []) {
+		if (seen.has(old.id)) continue;
+		const finished = old.state === "running" && !o.omitted;
+		orchs.push(finished ? { ...old, state: "done", endedAt: o.now } : old);
+		for (const a of s.agents) {
+			if (a.orch !== old.id) continue;
+			rows.push(finished && a.state === "working" ? { ...a, state: "done" } : a);
+		}
+	}
+	// (f) drop only absent orchestrators (lowest n first); every current snapshot entry keeps its number
+	orchs.sort((a, b) => a.n - b.n);
+	const dropped = new Set(orchs.filter((x) => !seen.has(x.id)).slice(0, Math.max(0, orchs.length - MAX_ORCH)).map((x) => x.id));
+	const kept = orchs.filter((x) => !dropped.has(x.id));
+	const keptIds = new Set(kept.map((x) => x.id));
+	return { state: { ...s, orchestrators: kept, nextOrch: next, agents: [...direct, ...rows.filter((a) => !a.orch || keptIds.has(a.orch))] }, launches };
+}

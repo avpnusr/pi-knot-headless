@@ -29,7 +29,7 @@ export function loadConfig(settings: unknown, env: Record<string, string | undef
 	}
 	const local = u.hostname === "localhost" || u.hostname === "127.0.0.1";
 	if (!(u.protocol === "https:" || (u.protocol === "http:" && local))) return bad("url", "must be https (http only for localhost)");
-	if (u.username || u.password || u.search || u.hash) return bad("url", "must not contain credentials, a query or a fragment");
+	if (u.username || u.password || u.search || u.hash || url.includes("?") || url.includes("#")) return bad("url", "must not contain credentials, a query or a fragment");
 
 	const parentPageId = env.KNOT_PARENT_PAGE_ID ?? s.parentPageId;
 	if (typeof parentPageId !== "string" || !UUID.test(parentPageId)) return bad("parentPageId", "must be a UUID (or env KNOT_PARENT_PAGE_ID)");

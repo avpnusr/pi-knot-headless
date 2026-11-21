@@ -7,9 +7,10 @@ import {
 	newComments, mapComment, composeDelivery, timeoutMessage, type State, type AgentRow, type Severity,
 } from "./core.ts";
 import { loadConfig, type Config } from "./config.ts";
-import { createKnot, tokenVarFor, KnotAuthError, type Knot } from "./knot.ts";
+import { createKnot, tokenVarFor, KnotAuthError, KnotResponseError, type Knot } from "./knot.ts";
 import { render, defang } from "./render.ts";
 import { buildSummaryInput, parseSummaryReply, gate, SYSTEM_PROMPT, TITLE_PROMPT } from "./summary.ts";
+import { orchestratorsFromSnapshot, claimWorkerEntries, applyOrchestrators, launchFromArgs, addLaunch, type Launch } from "./orchestrators.ts";
 
 export interface Deps {
 	now: () => number;
@@ -35,6 +36,9 @@ const RPC_TIMEOUT_MS = 2_000;
 const COMMENT_MAX_BYTES = 3_500; // Knot rejects comment bodies over 4096 bytes
 const TIMER_KEY = Symbol.for("pi-knot-headless.timer");
 const MAX_ROWS = 30;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SELF_OWNER_WARNING = "pi-knot-headless: ownerUid is the agent's own Knot account, so anyone holding that token (the agent's shell, subagents) can answer as you. Use a separate bot token for the agent.";
+const SELF_OWNER_TOOL_MESSAGE = "Knot answers are disabled because ownerUid is the agent's own Knot account. Use a separate bot token for the agent, and ask the user directly in this session instead of waiting for a Knot answer.";
 
 export function readGlobalSettings(env: Record<string, string | undefined>): unknown {
 	try {
@@ -60,8 +64,15 @@ export interface Handle {
 	state(): State;
 }
 
-const cutBytes = (s: string, max: number) => (Buffer.byteLength(s) <= max ? s : Buffer.from(s).subarray(0, max).toString());
-const launches = (a: any) => !!(a && (a.agent || a.tasks || a.chain || a.workflow || a.task)); // not status/list/management calls
+const cutBytes = (s: string, max: number) => {
+	const b = Buffer.from(s);
+	if (b.length <= max) return s;
+	let n = max;
+	while (n > 0 && (b[n] & 0xc0) === 0x80) n--; // never cut inside a multibyte char (a lone fragment decodes to a 3-byte U+FFFD)
+	return b.subarray(0, n).toString();
+};
+const isLaunch = (a: any) => !!(a && (a.agent || a.tasks || a.chain || a.workflow || a.task)); // not status/list/management calls
+let launches: Launch[] = [];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function create(pi: any, deps: Deps): Handle {
@@ -126,12 +137,11 @@ export function create(pi: any, deps: Deps): Handle {
 		if (!st.title) st = { ...st, title: makeTitle() };
 		if (!st.tokenProvider) st = { ...st, tokenProvider: provider() };
 		const page = await knot!.createPage(clean(st.title), cfg!.parentPageId);
+		const selfOwned = !!page.createdBy && page.createdBy === cfg!.ownerUid;
 		// a brand-new page has no history: everything posted from now on is new
-		st = { ...st, pageId: page.id, watermark: { id: "", createdAt: "" } };
+		st = { ...st, pageId: page.id, pageCreator: page.createdBy, watermark: { id: "", createdAt: "" }, ...(selfOwned ? { selfOwned: true } : {}) };
 		persist();
-		if (page.createdBy && page.createdBy === cfg!.ownerUid) {
-			notifyOnce("pi-knot-headless: ownerUid is the agent's own Knot account, so anyone holding that token (the agent's shell, subagents) can answer as you. Use a separate bot token for the agent.");
-		}
+		if (selfOwned) notifyOnce(SELF_OWNER_WARNING);
 	}
 
 	async function postQuestionComments(): Promise<void> {
@@ -167,8 +177,10 @@ export function create(pi: any, deps: Deps): Handle {
 	}
 
 	async function pollComments(): Promise<void> {
+		if (st.selfOwned) return;
 		await ensureBaseline();
 		const all = await knot!.listComments(st.pageId!);
+		if (stopped || st.phase === "ended") return;
 		const fresh = newComments(all, st.watermark);
 		if (fresh.length === 0) return;
 		const prev = st;
@@ -226,7 +238,8 @@ export function create(pi: any, deps: Deps): Handle {
 			if (force || now - lastPoll >= POLL_MS - POLL_SLACK_MS) {
 				lastPoll = now;
 				try { await postQuestionComments(); } catch (e) { if (e instanceof KnotAuthError) throw e; log(e); }
-				await pollComments();
+				// an oversized/malformed comment list must not also stop the dashboard writes; a real outage still goes to knotFailed
+				try { await pollComments(); } catch (x) { if (!(x instanceof KnotResponseError)) throw x; log(x); }
 				scheduleFleet();
 			}
 			await writePage(force);
@@ -239,19 +252,30 @@ export function create(pi: any, deps: Deps): Handle {
 	// ---- subagent collection --------------------------------------------------
 	function applyFleet(entries: any[], total: number, omitted: number, snapshot?: unknown): void {
 		const nestedMap = nestedByAgent(snapshot);
+		const snap = orchestratorsFromSnapshot(snapshot);
+		const claimed = snap?.length ? claimWorkerEntries(entries, snap) : new Set<string>();
+		const directEntries = snap?.length ? entries.filter((e) => !claimed.has(String(e.key ?? e.agent)) && e.agent !== "workflow") : entries;
 		const live = new Map<string, AgentRow>();
-		for (const e of entries) {
+		for (const e of directEntries) {
 			const key = String(e.key ?? e.agent);
 			const name = String(e.agent ?? "agent");
 			const seen = nestedMap.get(name);
-			const prev = st.agents.find((a) => a.key === key);
+			const prev = st.agents.find((a) => !a.orch && a.key === key);
 			const n = Math.max(seen?.n ?? 0, prev?.nested ?? 0);
 			live.set(key, { key, name, model: String(e.model ?? ""), state: "working", task: String(e.goal ?? e.role ?? ""), ...(n ? { nested: n, nestedTruncated: seen ? seen.truncated : !!prev?.nestedTruncated } : {}) });
 		}
 		// a row that left the fleet has finished; if the fleet was truncated we cannot tell, so keep it as it was
-		const carried = st.agents.filter((a) => !live.has(a.key)).map((a) => (a.state === "working" && omitted === 0 ? { ...a, state: "done" as const } : a));
-		const all = [...carried, ...live.values()];
-		st = assignDots({ ...st, agents: all.slice(-MAX_ROWS), agentsDropped: (st.agentsDropped ?? 0) + Math.max(0, all.length - MAX_ROWS), backgroundRunning: total });
+		const carried = st.agents.filter((a) => !a.orch && !live.has(a.key)).map((a) => (a.state === "working" && omitted === 0 ? { ...a, state: "done" as const } : a));
+		let all = [...carried, ...live.values()];
+		const dropped = Math.max(0, all.length - MAX_ROWS);
+		all = all.slice(-MAX_ROWS); // only direct rows compete for MAX_ROWS; orchestrator rows are rebuilt below
+		if (snap) {
+			const r = applyOrchestrators({ ...st, agents: [...all, ...st.agents.filter((a) => a.orch)] }, snap, { launches, now: deps.now(), omitted: Number((snapshot as any)?.omitted?.runs ?? 0) > 0 });
+			st = r.state;
+			launches = r.launches;
+			all = st.agents;
+		}
+		st = assignDots({ ...st, agents: all, agentsDropped: (st.agentsDropped ?? 0) + dropped, backgroundRunning: total });
 	}
 
 	// one request/reply round trip to pi-subagents' in-process RPC; resolves undefined on timeout or when pi-subagents is absent
@@ -366,6 +390,7 @@ export function create(pi: any, deps: Deps): Handle {
 
 	// ---- events ---------------------------------------------------------------
 	pi.on("session_start", guard(async (event: any, ctx: any) => {
+		launches = [];
 		ctxRef = ctx;
 		stopped = false;
 		gen++;
@@ -380,15 +405,24 @@ export function create(pi: any, deps: Deps): Handle {
 		const head = ctx.model?.id ?? "";
 		st = newState(now, "", head);
 		if (event?.reason !== "new" && event?.reason !== "fork") {
-			const saved = [...(ctx.sessionManager?.getBranch?.() ?? [])].reverse().find((e: any) => e.type === "custom" && e.customType === ENTRY);
+			const branch = ctx.sessionManager?.getBranch?.() ?? [];
+			const saved = [...branch].reverse().find((e: any) => e.type === "custom" && e.customType === ENTRY);
+			const newest = [...(ctx.sessionManager?.getEntries?.() ?? branch)].reverse().find((e: any) => e.type === "custom" && e.customType === ENTRY);
 			if (saved?.data?.version === 1) {
 				const d = saved.data;
 				const counts = d.counts ?? (d.decisions ?? []).reduce((c: any, x: any) => (x.by === "system" ? c : { ...c, [x.by]: (c[x.by] ?? 0) + 1 }), { model: 0, user: 0, timeout: 0 });
-				st = { ...d, counts, phase: "idle", agents: [], agentsDropped: (d.agentsDropped ?? 0) + (d.agents?.length ?? 0), headModel: head || d.headModel, backgroundRunning: 0, mutated: false, decidedThisRun: 0 };
+				st = { ...d, counts, phase: "idle", agents: [], orchestrators: [], agentsDropped: (d.agentsDropped ?? 0) + (d.agents?.length ?? 0), headModel: head || d.headModel, backgroundRunning: 0, mutated: false, decidedThisRun: 0 };
+				if (newest?.data?.version === 1 && newest.data.pageId === st.pageId && newest.data.watermark) st = { ...st, watermark: newest.data.watermark, ownIds: newest.data.ownIds ?? [] };
+				if (st.pageId !== undefined && !UUID.test(st.pageId)) {
+					st = { ...st, pageId: undefined, pageCreator: undefined, selfOwned: undefined, watermark: undefined, ownIds: [], questions: st.questions.map((q) => ({ ...q, threadId: undefined })) };
+				}
+				if (st.pageCreator && cfg) st = { ...st, selfOwned: st.pageCreator === cfg.ownerUid ? true : undefined }; // re-check against the current ownerUid (pages from before pageCreator was stored keep their flag)
 				if (!cfg?.summarizer) st = { ...st, summary: undefined, summaryFp: undefined }; // the user switched the summarizer off: stop showing old text
 			}
 		}
 		firstPrompt = ""; warnedRun = false;
+		notified.delete(SELF_OWNER_WARNING);
+		if (st.selfOwned) notifyOnce(SELF_OWNER_WARNING);
 		if (!active()) {
 			if (!cfg && !inertMode && cfgReason) setStatus("knot: not configured");
 			return;
@@ -428,12 +462,19 @@ export function create(pi: any, deps: Deps): Handle {
 
 	pi.on("tool_execution_start", guard((event: any) => {
 		st = { ...st, headActivity: `running ${event.toolName}` };
-		if (event.toolName === "subagent" && launches(event.args) && active()) void launchTrigger().then(scheduleFleet);
+		if (event.toolName === "subagent") {
+			const l = launchFromArgs(event.args, deps.now(), event.toolCallId);
+			if (l) launches = addLaunch(launches, l, deps.now());
+		}
+		if (event.toolName === "subagent" && isLaunch(event.args) && active()) void launchTrigger().then(scheduleFleet);
 	}));
 
 	pi.on("tool_execution_end", guard((event: any) => {
 		if (["edit", "write", "bash"].includes(event.toolName)) st = { ...st, mutated: true };
-		if (event.toolName === "subagent") scheduleFleet();
+		if (event.toolName === "subagent") {
+			if (event.isError) launches = launches.filter((l) => l.id !== event.toolCallId);
+			scheduleFleet();
+		}
 	}));
 
 	pi.on("agent_settled", guard(() => {
@@ -481,6 +522,7 @@ export function create(pi: any, deps: Deps): Handle {
 				if (!active()) {
 					return text(`Knot reporting is not active (${disabled ? "disabled or Knot rejected the token" : "stopped"}). Decide yourself and state the decision in your reply; ask the user directly if it is critical.`);
 				}
+				if (st.selfOwned && p.severity !== "minor") return text(SELF_OWNER_TOOL_MESSAGE);
 				if (offline && p.severity !== "minor") throw new Error("Knot is currently offline; ask the user directly in this session instead.");
 				const r = askQuestion(st, p, deps.now(), cfg!.askTimeoutMinutes * 60_000);
 				if (r.error) throw new Error(r.error);
@@ -491,13 +533,21 @@ export function create(pi: any, deps: Deps): Handle {
 					return text("Decision logged on the Knot dashboard. Continue.");
 				}
 				try {
-					await serial(async () => { await ensurePage(); await postQuestionComments(); await writePage(true); });
+					await serial(async () => {
+						await ensurePage();
+						if (!st.selfOwned) { await postQuestionComments(); await writePage(true); }
+					});
 				} catch (e) {
 					// undo only this question: a concurrent tick may meanwhile have delivered an answer, which must stay delivered
 					st = { ...st, questions: st.questions.filter((q) => q.id !== r.qid), decidedThisRun: Math.max(0, st.decidedThisRun - 1) };
 					persist();
 					knotFailed(e);
 					throw new Error(`Knot is not reachable (${clean(String((e as Error).message))}); ask the user directly in this session instead.`);
+				}
+				if (st.selfOwned) {
+					st = { ...st, questions: st.questions.filter((q) => q.id !== r.qid), decidedThisRun: Math.max(0, st.decidedThisRun - 1) };
+					persist();
+					return text(SELF_OWNER_TOOL_MESSAGE);
 				}
 				persist();
 				const waits = p.severity === "critical" ? "There is no default: wait for the user." : `If there is no answer within ${cfg!.askTimeoutMinutes} min, the default (${p.recommended}) applies and you will be told.`;

@@ -34,6 +34,8 @@ test("missing or invalid keys name the key", () => {
 		[{ ...base, askTimeoutMinutes: 1e12 }, "askTimeoutMinutes"],
 		[{ ...base, url: "https://user:pw@knot.example.com" }, "url"],
 		[{ ...base, url: "https://knot.example.com/?x=1" }, "url"],
+		[{ ...base, url: "https://knot.example.com?" }, "url"],
+		[{ ...base, url: "https://knot.example.com#" }, "url"],
 		[{ ...base, parentPageId: "nope" }, "parentPageId"],
 		[{ ...base, ownerUid: "nope" }, "ownerUid"],
 		[{ ...base, askTimeoutMinutes: -1 }, "askTimeoutMinutes"],

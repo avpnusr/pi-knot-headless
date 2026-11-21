@@ -47,6 +47,15 @@ test("plain comment: interpretedQ only when exactly one question is open", () =>
 	assert.ok(m.kind === "general" && m.interpretedQ === undefined);
 });
 
+test("reply in a closed question's thread is never interpreted as an answer to another open question", () => {
+	const s = { ...withQ(2), questions: withQ(2).questions.filter((q) => q.id === "Q2") }; // Q1 closed, Q2 still open
+	const m = mapComment(c("c1", { thread_id: "th1", parent_id: "th1", body: "1" }), s, OWNER);
+	assert.ok(m.kind === "general" && m.interpretedQ === undefined, JSON.stringify(m));
+	const msg = composeDelivery([{ mapped: m, s }]);
+	assert.ok(!msg.includes("interpreted as an answer"), msg);
+	assert.ok(msg.includes("Open questions, not answered by this message") && msg.includes("Q2"), msg);
+});
+
 test("5000-char body is truncated to 4096", () => {
 	const m = mapComment(c("c1", { body: "x".repeat(5000) }), withQ(0), OWNER);
 	assert.ok(m.kind === "general" && m.text.length === 4096);

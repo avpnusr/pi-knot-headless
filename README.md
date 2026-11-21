@@ -12,7 +12,7 @@
 
 ## What you get
 
-- **One page per session**, titled `<project folder> · <what you asked>`, rewritten in place so it never grows: head model, a table of subagents with a colored dot per agent, their model, state and task, the open questions, and the decisions reported.
+- **One page per session**, titled `<project folder> · <what you asked>`, rewritten in place so it never grows: head model, the subagents with a colored dot per agent (workflows appear as numbered **Orchestrators**, each with its own table of workers and their tasks, older finished ones collapsed to one line; subagents you launched directly are listed separately), the open questions, and the decisions reported.
 - **Questions that wait for you.** The model calls the `knot_ask` tool. You reply **in the question's comment thread** (or comment `Q1 2` for option 2, or `Q1: free text`). The extension delivers it as a user message and the session continues.
 - **Every decision is visible.** Easy choices are logged (🤖), your answers (👤) and timeout defaults (⏱) too.
 - **A result at a glance.** The ended page shows an outcome line (runs, subagents, decisions, answers, timeouts) and a usage line: tokens and a list-price dollar estimate taken from pi-subagents, clearly labelled as *not your plan bill*. Subagents that fanned out show `+3 nested`.
@@ -106,7 +106,7 @@ after a question; the answer arrives as a user message starting `Knot answer to 
 - Everything written to Knot is escaped (no fake structure from model- or subagent-authored text), truncated, and scrubbed of the values of your token env vars and common token patterns.
 - The extension is inert inside subagent child processes and in print/json mode, so a child never creates pages or speaks for you. Everything the model wrote (question, options, recommended default, reasoning) is quoted again when it is sent back to the session, so model text cannot forge a "message from the user".
 - Question comments are defanged (no images, links or @mentions), and no HTTP redirect is ever followed, so the token cannot be forwarded to another origin.
-- **Residual risks you should know about:** the Knot token lives in pi's environment, which the agent's own shell and subagents inherit. A prompt-injected agent could therefore use it to edit pages or post comments as that account. Give the agent a dedicated bot token with access only to the parent page's subtree, and set `ownerUid` to *your* account, not the bot's (the extension warns if they are the same). Redaction is best-effort pattern matching, not a guarantee.
+- **Residual risks you should know about:** the Knot token lives in pi's environment, which the agent's own shell and subagents inherit. A prompt-injected agent could therefore use it to edit pages or post comments as that account. Give the agent a dedicated bot token with access only to the parent page's subtree, and set `ownerUid` to *your* account, not the bot's. If the page creator equals `ownerUid`, the extension warns on every session start/resume, disables inbound Knot answers, and makes `knot_ask` direct the agent to ask in the session instead; dashboard writes still work. Redaction is best-effort pattern matching, not a guarantee.
 - Every Knot call has retry/backoff; an outage or an expired token never breaks the session, it only shows `knot: offline` in the status line.
 
 ## Limitations
@@ -123,8 +123,6 @@ after a question; the answer arrives as a user message starting `Knot answer to 
 
 ```bash
 npm test                      # node --test, no dependencies
-scripts/scan.sh --history     # secret / personal-data scan of the tree and all commits; install as .git/hooks/pre-push
-scripts/preview.sh out/ && node scripts/shoot.mjs out/   # regenerate the README screenshots
 ```
 
 Design and plan: [`docs/design.md`](docs/design.md), [`docs/plan.md`](docs/plan.md). The code is split into pure logic (`core.ts`, `render.ts`, `config.ts`), a small Knot client (`knot.ts`) and the pi wiring (`extension.ts`, with `index.ts` only adding the tool schema), so almost everything is testable without pi.

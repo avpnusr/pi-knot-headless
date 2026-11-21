@@ -38,6 +38,24 @@ test("input: allow-listed fields only, redacted, bounded; fingerprint ignores th
 	assert.notEqual(a.fp, buildSummaryInput({ ...s, agents: [row({ state: "done" })] }, [secret]).fp);
 });
 
+test("input: a secret straddling the 120-char cut is fully redacted, and whitespace inside a secret still matches", () => {
+	const straddle = "A".repeat(30);
+	let s = newState(0, "t", "m");
+	s = { ...s, agents: [row({ task: "x".repeat(110) + straddle })], phase: "idle" };
+	const a = buildSummaryInput(s, [straddle]);
+	assert.ok(!a.text.includes("A".repeat(10)), a.text); // old code cut first and leaked the first 10 chars
+	const ws = "A".repeat(12) + "  " + "A".repeat(12); // secret containing whitespace
+	s = { ...newState(0, "t", "m"), agents: [row({ task: `key ${ws} end` })] };
+	const b = buildSummaryInput(s, [ws]);
+	assert.ok(!b.text.includes("A".repeat(12)), b.text); // old code collapsed whitespace before matching, leaking it
+});
+
+test("reply parsing: a secret straddling the 400-char cut is fully redacted", () => {
+	const secret = "A".repeat(250); // starts before the 240-char summary slice but runs past the 400-char cut
+	const r = parseSummaryReply("y".repeat(200) + secret, false, [secret]);
+	assert.ok(!r.summary!.includes("A".repeat(10)), r.summary);
+});
+
 test("input never contains fields outside the allow-list (ownIds, watermark, page id)", () => {
 	const s = { ...newState(0, "t", "m"), pageId: "PAGEID-SECRET", ownIds: ["OWNID-1"], watermark: { id: "WM-1", createdAt: "x" } };
 	const t = buildSummaryInput(s, []).text;

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { harness, FakeKnot, OWNER, BOT, PARENT } from "./fakepi.ts";
-import { KnotAuthError } from "./knot.ts";
+import { KnotAuthError, KnotResponseError } from "./knot.ts";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -178,6 +178,26 @@ test("fork drops the inherited page; resume and reload restore it", async () => 
 	}
 });
 
+test("restore drops an invalid page id together with its comment cursor and thread ids", async () => {
+	const h1 = harness();
+	await h1.start();
+	await h1.ask(critical);
+	const saved = structuredClone(h1.entries.at(-1).data);
+	saved.pageId = "../../admin";
+	saved.selfOwned = true;
+	const h2 = harness({ entries: [{ type: "custom", customType: "knot-headless", data: saved }] });
+	await h2.start("resume");
+	const st = h2.handle.state();
+	assert.equal(st.pageId, undefined);
+	assert.equal(st.watermark, undefined);
+	assert.equal(st.selfOwned, undefined);
+	assert.deepEqual(st.ownIds, []);
+	assert.ok(st.questions.every((q) => q.threadId === undefined));
+	await h2.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h2.handle.tick(true);
+	assert.equal(h2.knot.created.length, 1);
+});
+
 test("after a reload, comments that were already delivered are not delivered again", async () => {
 	const h = harness();
 	await h.start();
@@ -192,6 +212,25 @@ test("after a reload, comments that were already delivered are not delivered aga
 	h.knot.comment("new instruction");
 	await h2.handle.tick(true);
 	assert.equal(h2.sent.length, 1);
+});
+
+test("restore uses the newest watermark and ownIds across the session, not only the current branch", async () => {
+	const h1 = harness();
+	await h1.start();
+	await h1.ask(critical);
+	const branch = structuredClone(h1.entries);
+	h1.knot.reply(h1.knot.comments[0].id, "1");
+	await h1.handle.tick(true);
+	assert.equal(h1.sent.length, 1);
+	await h1.ask({ ...critical, question: "A later branch question?" });
+	const newest = h1.handle.state();
+	const h2 = harness({ knot: h1.knot });
+	const sessionManager = { getBranch: () => branch, getEntries: () => h1.entries, getSessionName: () => undefined };
+	await h2.start("resume", h2.ctx({ sessionManager }));
+	await h2.handle.tick(true);
+	assert.equal(h2.sent.length, 0);
+	assert.deepEqual(h2.handle.state().ownIds, newest.ownIds);
+	assert.equal(h2.handle.state().questions[0].text, critical.question); // all other state is branch-local
 });
 
 test("comments posted while pi was down are delivered once on start", async () => {
@@ -260,13 +299,35 @@ test("failed page write after the page exists: only the new question is undone, 
 	assert.equal(h.handle.state().questions.length, 0);
 });
 
-test("ownerUid equal to the agent's own account is allowed but warned about, and its own comments are still not delivered", async () => {
-	const h = harness({ settings: { "pi-knot-headless": { url: "https://knot.example.com", parentPageId: PARENT, ownerUid: BOT } } });
+test("ownerUid equal to the agent's own account disables Knot answers, persists, and warns on every start", async () => {
+	const settings = { "pi-knot-headless": { url: "https://knot.example.com", parentPageId: PARENT, ownerUid: BOT } };
+	const h = harness({ settings });
 	await h.start();
-	await h.ask(critical);
+	const r = await h.ask(critical);
+	assert.match(r.content[0].text, /Knot answers are disabled.*ownerUid.*own Knot account.*separate bot token.*ask the user directly/s);
+	assert.equal(r.terminate, undefined);
+	assert.equal(h.handle.state().selfOwned, true);
+	assert.equal(h.handle.state().questions.length, 0);
+	assert.equal(h.entries.at(-1).data.selfOwned, true);
+	assert.equal(h.knot.comments.length, 0);
 	await h.handle.tick(true);
-	assert.equal(h.sent.length, 0);
+	assert.ok(h.knot.replaces.length > 0); // dashboard writes still work
 	assert.ok(h.notes.some((n) => /own Knot account/.test(n)));
+
+	const lists = h.knot.listCalls;
+	h.knot.comment("forged approval", BOT);
+	await h.handle.tick(true);
+	assert.equal(h.knot.listCalls, lists);
+	assert.equal(h.sent.length, 0);
+
+	const h2 = harness({ settings, entries: h.entries, knot: h.knot });
+	await h2.start("resume");
+	assert.equal(h2.handle.state().selfOwned, true);
+	assert.ok(h2.notes.some((n) => /own Knot account/.test(n)));
+	assert.match((await h2.ask(critical)).content[0].text, /Knot answers are disabled/);
+	await h2.handle.tick(true);
+	assert.equal(h2.knot.listCalls, lists);
+	assert.equal(h2.sent.length, 0);
 });
 
 test("subagents: async start shows the row; it turns done when it leaves the fleet", async () => {
@@ -481,6 +542,136 @@ test("without pi-subagents (no RPC reply) the cost stays absent and nothing brea
 	assert.equal(h.handle.state().cost, undefined);
 });
 
+const orchStep = (id: string, agent: string, model = "m", startedAt = 1000) => ({ id, kind: "step", label: id, state: "running", agent, model, startedAt });
+const orchWorkflow = (id: string, children: any[], startedAt = 1000) => ({ id, kind: "workflow", label: "x", state: "running", startedAt, children });
+const orchSnapshot = (runs: any[]) => ({ omitted: { runs: 0, children: 0, byteLimitExceeded: false }, caps: { maxChildrenPerNode: 8 }, runs });
+async function readAgents(h: ReturnType<typeof harness>) {
+	h.pi.events.emit("subagent:jobs-changed", { version: 1 });
+	await h.runTimeouts();
+}
+
+test("a workflow becomes an Orchestrator with its workers", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	h.fleet = { entries: [{ key: "w", agent: "workflow" }, { key: "w1", agent: "a", model: "m", startedAt: 1000 }, { key: "w2", agent: "b", model: "m", startedAt: 1000 }], totalActive: 3 };
+	h.snapshot = orchSnapshot([orchWorkflow("o1", [orchStep("task-1", "a"), orchStep("task-2", "b")])]);
+	await readAgents(h);
+	const st = h.handle.state();
+	assert.equal(st.orchestrators?.length, 1);
+	assert.equal(st.orchestrators?.[0].n, 1);
+	assert.equal(st.agents.length, 2);
+	assert.ok(st.agents.every((a) => a.orch === "o1"));
+	assert.ok(!st.agents.some((a) => a.name === "workflow"));
+	assert.equal(new Set(st.agents.map((a) => a.key)).size, 2);
+	await h.handle.tick(true);
+	assert.ok(h.knot.replaces.at(-1)!.includes("### 🎛 Orchestrator 1"));
+});
+
+test("task text comes from the launch arguments", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const startedAt = h.clock.t;
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "t1", args: { workflow: "parallel", args: { tasks: [{ agent: "a", task: "fix the parser" }, { agent: "b", task: "write tests" }] } } });
+	h.fleet = { entries: [{ key: "w1", agent: "a", model: "m", startedAt }, { key: "w2", agent: "b", model: "m", startedAt }], totalActive: 2 };
+	h.snapshot = orchSnapshot([orchWorkflow("o1", [orchStep("task-1", "a", "m", startedAt), orchStep("task-2", "b", "m", startedAt)], startedAt)]);
+	await readAgents(h);
+	assert.deepEqual(h.handle.state().agents.map((a) => a.task), ["fix the parser", "write tests"]);
+});
+
+test("a failed workflow launch is removed before it can supply task text", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const startedAt = h.clock.t;
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "failed-call", args: { workflow: "parallel", args: { tasks: [{ agent: "a", task: "wrong-a" }, { agent: "b", task: "wrong-b" }] } } });
+	await h.fire("tool_execution_end", { toolName: "subagent", toolCallId: "failed-call", isError: true });
+	h.fleet = { entries: [{ key: "w1", agent: "a", model: "m", startedAt }, { key: "w2", agent: "b", model: "m", startedAt }], totalActive: 2 };
+	h.snapshot = orchSnapshot([orchWorkflow("o1", [orchStep("task-1", "a", "m", startedAt), orchStep("task-2", "b", "m", startedAt)], startedAt)]);
+	await readAgents(h);
+	assert.deepEqual(h.handle.state().agents.map((a) => a.task), ["task-1", "task-2"]);
+});
+
+test("more than 30 orchestrator rows never displace direct rows or inflate agentsDropped", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	h.fleet = { entries: [{ key: "d1", agent: "direct-a", model: "m" }, { key: "d2", agent: "direct-b", model: "m" }], totalActive: 2 };
+	h.snapshot = orchSnapshot(Array.from({ length: 8 }, (_, i) => orchWorkflow(`o${i}`, Array.from({ length: 4 }, (_, j) => orchStep(`task-${j + 1}`, `a${i}-${j}`)))));
+	await readAgents(h);
+	await readAgents(h);
+	const st = h.handle.state();
+	assert.equal(st.agents.filter((a) => a.orch).length, 32);
+	assert.deepEqual(st.agents.filter((a) => !a.orch).map((a) => a.key), ["d1", "d2"]);
+	assert.equal(st.agentsDropped, 0);
+});
+
+test("two workflows with the same task-N keys keep their own rows", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	h.fleet = { entries: [], totalActive: 0 };
+	h.snapshot = orchSnapshot([
+		orchWorkflow("o1", [orchStep("task-1", "a"), orchStep("task-2", "b")], 1000),
+		orchWorkflow("o2", [orchStep("task-1", "c"), orchStep("task-2", "d")], 2000),
+	]);
+	await readAgents(h);
+	const st = h.handle.state();
+	assert.deepEqual(st.orchestrators?.map((o) => o.n), [1, 2]);
+	assert.equal(st.agents.length, 4);
+	assert.equal(new Set(st.agents.map((a) => a.key)).size, 4);
+	assert.deepEqual(st.agents.map((a) => a.key).sort(), ["o1:task-1", "o1:task-2", "o2:task-1", "o2:task-2"]);
+});
+
+test("without a snapshot nothing changes", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	h.snapshot = undefined;
+	h.fleet = { entries: [{ key: "w", agent: "workflow" }], totalActive: 1 };
+	await readAgents(h);
+	assert.deepEqual(h.handle.state().agents.map((a) => a.name), ["workflow"]);
+	assert.equal(h.handle.state().orchestrators, undefined);
+});
+
+test("a finished orchestrator stays on the page", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	h.fleet = { entries: [{ key: "w1", agent: "a", model: "m", startedAt: 1000 }], totalActive: 1 };
+	h.snapshot = orchSnapshot([orchWorkflow("o1", [orchStep("task-1", "a")])]);
+	await readAgents(h);
+	h.fleet = { entries: [], totalActive: 0 };
+	h.snapshot = orchSnapshot([]);
+	await readAgents(h);
+	const st = h.handle.state();
+	assert.equal(st.orchestrators?.length, 1);
+	assert.equal(st.orchestrators?.[0].state, "done");
+	assert.equal(st.agents.length, 1);
+	assert.ok(st.agents.every((a) => a.state === "done"));
+});
+
+test("restore resets orchestrators but numbering continues", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	const saved = structuredClone(h.entries.at(-1).data);
+	saved.orchestrators = [{ id: "o1", n: 1, state: "done", workers: 1 }, { id: "o2", n: 2, state: "done", workers: 1 }];
+	saved.nextOrch = 3;
+	const resumed = harness({ entries: [{ type: "custom", customType: "knot-headless", data: saved }] });
+	await resumed.start("resume");
+	assert.deepEqual(resumed.handle.state().orchestrators, []);
+	assert.equal(resumed.handle.state().nextOrch, 3);
+});
+
 test("nested count from the status snapshot lands on the matching row and survives the row finishing", async () => {
 	const h = harness();
 	await h.start();
@@ -690,4 +881,68 @@ test("a closing session does not poll and swallow an answer after it ended", asy
 	h.knot.reply(h.knot.comments[0].id, "1");
 	await h.handle.tick(true);
 	assert.equal(h.sent.length, 0);
+});
+
+test("an in-flight poll response is discarded after shutdown without advancing the watermark", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask(critical);
+	h.knot.reply(h.knot.comments[0].id, "1");
+	const watermark = structuredClone(h.handle.state().watermark);
+	let release!: () => void;
+	h.knot.listGate = new Promise<void>((r) => (release = r));
+	const polling = h.handle.tick(true);
+	await h.flush();
+	assert.equal(h.knot.listCalls, 1);
+	await h.fire("session_shutdown", { reason: "reload" });
+	release();
+	await polling;
+	assert.equal(h.sent.length, 0);
+	assert.deepEqual(h.handle.state().watermark, watermark);
+	assert.equal(h.handle.state().questions.length, 1);
+});
+
+test("selfOwned is re-derived from the stored page creator against the current ownerUid on every start", async () => {
+	const botOwner = { "pi-knot-headless": { url: "https://knot.example.com", parentPageId: PARENT, ownerUid: BOT } };
+	const h = harness({ settings: botOwner });
+	await h.start();
+	await h.ask(critical);
+	assert.equal(h.handle.state().selfOwned, true);
+	// ownerUid corrected later: inbound answers work again
+	const fixed = harness({ entries: h.entries, knot: h.knot });
+	await fixed.start("resume");
+	assert.equal(fixed.handle.state().selfOwned, undefined);
+	// ownerUid changed to the agent's own account later: inbound answers are switched off
+	const normal = harness();
+	await normal.start();
+	await normal.ask(critical);
+	assert.equal(normal.handle.state().selfOwned, undefined);
+	const swapped = harness({ settings: botOwner, entries: normal.entries, knot: normal.knot });
+	await swapped.start("resume");
+	assert.equal(swapped.handle.state().selfOwned, true);
+	assert.ok(swapped.notes.some((n) => /own Knot account/.test(n)));
+});
+
+test("restore ignores the session-wide watermark when the newest entry belongs to another page", async () => {
+	const h1 = harness();
+	await h1.start();
+	await h1.ask(critical);
+	const branch = structuredClone(h1.entries);
+	const other = { ...structuredClone(h1.entries.at(-1)), data: { ...structuredClone(h1.entries.at(-1).data), pageId: "0eeeeeee-0000-4000-8000-000000000009", watermark: { id: "zzz", createdAt: "2099-01-01T00:00:00.000000Z" } } };
+	const h2 = harness({ knot: h1.knot });
+	const sessionManager = { getBranch: () => branch, getEntries: () => [...branch, other], getSessionName: () => undefined };
+	await h2.start("resume", h2.ctx({ sessionManager }));
+	assert.deepEqual(h2.handle.state().watermark, branch.at(-1).data.watermark);
+});
+
+test("an oversized/malformed comment list does not stop dashboard writes or mark Knot offline", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask(critical);
+	h.knot.listComments = async () => { throw new KnotResponseError("Knot comments response exceeds 2 MiB"); };
+	const writes = h.knot.replaces.length;
+	await h.ask({ question: "tabs or spaces?", recommended: "spaces", severity: "minor" });
+	await h.handle.tick(true);
+	assert.ok(h.knot.replaces.length > writes);
+	assert.notEqual(h.status.at(-1), "knot: offline");
 });

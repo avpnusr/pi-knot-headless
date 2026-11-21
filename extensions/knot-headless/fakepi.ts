@@ -11,6 +11,8 @@ export class FakeKnot implements Knot {
 	created: string[] = [];
 	comments: Comment[] = [];
 	calls = 0;
+	listCalls = 0;
+	listGate?: Promise<void>;
 	failWith?: Error;
 	failReplace?: Error;
 	renames: string[] = [];
@@ -18,10 +20,10 @@ export class FakeKnot implements Knot {
 	private seq = 0;
 	private chk() { this.calls++; if (this.failWith) throw this.failWith; }
 	private stamp() { return `2026-11-21T10:00:${String(++this.seq).padStart(2, "0")}.000000Z`; }
-	async createPage(title: string) { this.chk(); this.created.push(title); return { id: `page${this.created.length}`, createdBy: BOT }; }
+	async createPage(title: string) { this.chk(); this.created.push(title); return { id: `0ddddddd-0000-4000-8000-${String(this.created.length).padStart(12, "0")}`, createdBy: BOT }; }
 	async replace(_id: string, md: string) { this.chk(); if (this.failReplace) throw this.failReplace; this.replaces.push(md); }
 	async rename(_id: string, title: string) { this.chk(); if (this.failRename) throw this.failRename; this.renames.push(title); }
-	async listComments() { this.chk(); return [...this.comments]; }
+	async listComments() { this.chk(); this.listCalls++; if (this.listGate) await this.listGate; return [...this.comments]; }
 	async addComment(_id: string, body: string) {
 		this.chk();
 		const id = `c${this.seq + 1}`;

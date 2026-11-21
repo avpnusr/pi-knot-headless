@@ -16,7 +16,7 @@ const cut = (t: string, n: number) => String(t).replace(/\s+/g, " ").trim().slic
 
 /** Allow-listed, redacted description of the session. `fp` ignores the title so renaming the page does not trigger another call. */
 export function buildSummaryInput(s: State, secrets: string[]): { text: string; fp: string } {
-	const c = (t: string) => redact(cut(t, 120), secrets);
+	const c = (t: string) => cut(redact(String(t), secrets), 120);
 	const body: string[] = [];
 	body.push(`phase: ${s.phase}`, `head model: ${c(s.headModel)}`, `activity: ${c(s.headActivity)}`);
 	body.push("subagents:", ...(s.agents.length ? s.agents.slice(-10).map((a) => `- ${c(a.name)} (${a.state}): ${c(a.task)}`) : ["- none"]));
@@ -28,7 +28,7 @@ export function buildSummaryInput(s: State, secrets: string[]): { text: string; 
 	return { text: `title: ${c(s.title)}\n${bodyText}`, fp: h.toString(36) };
 }
 
-const clean = (t: string, secrets: string[]) => redact(cut(t, 400), secrets);
+const clean = (t: string, secrets: string[]) => cut(redact(String(t), secrets), 400);
 
 export function parseSummaryReply(raw: string, wantTitle: boolean, secrets: string[]): { summary?: string; title?: string } {
 	const out: { summary?: string; title?: string } = {};

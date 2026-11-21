@@ -16,6 +16,8 @@ export interface Knot {
 	addComment(pageId: string, body: string): Promise<{ id: string; thread_id: string }>;
 }
 export class KnotAuthError extends Error {}
+/** The server answered, but with a body we refuse to process (too large, not a JSON array). Not an outage. */
+export class KnotResponseError extends Error {}
 
 export function tokenVarFor(provider: string, map: Record<string, string>): string | undefined {
 	return map[provider] ?? map["*"];
@@ -23,7 +25,9 @@ export function tokenVarFor(provider: string, map: Record<string, string>): stri
 
 const DELAYS = [1000, 2000, 4000, 8000];
 const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_COMMENTS_BYTES = 2 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const assertPageId = (pageId: string) => { if (!UUID.test(pageId)) throw new Error("invalid Knot page id"); };
 
 export function createKnot(o: {
 	fetch: typeof fetch;
@@ -76,15 +80,27 @@ export function createKnot(o: {
 			return { id: r.id, createdBy: String(r.created_by ?? "") };
 		},
 		async replace(pageId, markdown) {
+			assertPageId(pageId);
 			await call("POST", `/api/docs/${pageId}/markdown?mode=replace`, markdown, "text/markdown");
 		},
 		async rename(pageId, title) {
+			assertPageId(pageId);
 			await call("PATCH", `/api/docs/${pageId}`, JSON.stringify({ title }), "application/json");
 		},
 		async listComments(pageId) {
-			return (await (await call("GET", `/api/docs/${pageId}/comments?include_resolved=true`)).json()) as Comment[];
+			assertPageId(pageId);
+			const r = await call("GET", `/api/docs/${pageId}/comments?include_resolved=true`);
+			const contentLength = r.headers.get("content-length");
+			if (contentLength !== null && Number(contentLength) > MAX_COMMENTS_BYTES) throw new KnotResponseError("Knot comments response exceeds 2 MiB");
+			const text = await r.text();
+			if (Buffer.byteLength(text) > MAX_COMMENTS_BYTES) throw new KnotResponseError("Knot comments response exceeds 2 MiB");
+			let comments: unknown;
+			try { comments = JSON.parse(text); } catch { throw new KnotResponseError("Knot comments response is not JSON"); }
+			if (!Array.isArray(comments)) throw new KnotResponseError("Knot comments response must be a JSON array");
+			return comments as Comment[];
 		},
 		async addComment(pageId, body) {
+			assertPageId(pageId);
 			const r = await j(await call("POST", `/api/docs/${pageId}/comments`, JSON.stringify({ body }), "application/json"));
 			return { id: r.id, thread_id: r.thread_id };
 		},

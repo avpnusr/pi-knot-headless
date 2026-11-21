@@ -17,6 +17,10 @@ const SECRET_PATTERNS: RegExp[] = [
 	/\bAKIA[0-9A-Z]{16}\b/g,
 	/\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
 	/\bAIza[0-9A-Za-z_-]{20,}/g,
+	/\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+	/\b[sr]k_(live|test)_[A-Za-z0-9]{16,}/g,
+	/\bglpat-[A-Za-z0-9_-]{20,}/g,
+	/\bnpm_[A-Za-z0-9]{30,}/g,
 ];
 
 export function redact(text: string, secretValues: string[]): string {
@@ -55,8 +59,18 @@ export interface AgentRow {
 	model: string;
 	state: "working" | "done" | "failed" | "waiting" | "idle" | "paused";
 	task: string;
+	orch?: string; // id of the orchestrator (workflow) this worker belongs to
 	nested?: number; // subagents this one fanned out to (count only)
 	nestedTruncated?: boolean;
+}
+export interface Orchestrator { // a pi-subagents workflow, numbered per session
+	id: string;
+	n: number;
+	state: "running" | "done" | "failed";
+	workers: number;
+	startedAt?: number;
+	endedAt?: number;
+	truncated?: boolean;
 }
 export interface Cost {
 	input: number;
@@ -70,6 +84,8 @@ export interface Cost {
 export interface State {
 	version: 1;
 	pageId?: string;
+	pageCreator?: string; // Knot user id that created the page; selfOwned is re-derived from it on every start
+	selfOwned?: boolean; // the page creator is ownerUid, so inbound Knot answers must stay disabled
 	tokenProvider?: string;
 	title: string;
 	startedAt: number;
@@ -78,6 +94,8 @@ export interface State {
 	headModel: string;
 	headActivity: string;
 	agents: AgentRow[];
+	orchestrators?: Orchestrator[]; // workflows seen in the async snapshot
+	nextOrch?: number; // next unused orchestrator number (numbers are never reused)
 	questions: Question[];
 	decisions: Decision[];
 	nextQ: number;
@@ -223,7 +241,7 @@ export function mapComment(c: Comment, s: State, owner: string): Mapped {
 		const q = s.questions.find((x) => x.id === `Q${m[1]}`);
 		if (q) return withOption(q, m[2] ? Number(m[2]) : undefined, m[3]);
 	}
-	return { kind: "general", text: body, interpretedQ: s.questions.length === 1 ? s.questions[0].id : undefined };
+	return { kind: "general", text: body, interpretedQ: !c.parent_id && s.questions.length === 1 ? s.questions[0].id : undefined };
 }
 
 function withOption(q: Question, option: number | undefined, rest: string): Mapped {
@@ -250,7 +268,7 @@ export function composeDelivery(items: { mapped: Mapped; s: State }[]): string {
 			let t = `[Knot message from user] ${quote(m.text)}`;
 			const q = m.interpretedQ ? s.questions.find((x) => x.id === m.interpretedQ) : undefined;
 			if (q) t += ` (interpreted as an answer to ${q.id} ${quote(q.text)}; push back if it was not meant that way)`;
-			else if (s.questions.length > 1) t += ` (Open questions, not answered by this message: ${s.questions.map((x) => `${x.id} ${quote(x.text)}`).join("; ")})`;
+			else if (s.questions.length >= 1) t += ` (Open questions, not answered by this message: ${s.questions.map((x) => `${x.id} ${quote(x.text)}`).join("; ")})`;
 			parts.push(t);
 		}
 	}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createKnot, tokenVarFor, KnotAuthError } from "./knot.ts";
+import { createKnot, tokenVarFor, KnotAuthError, KnotResponseError } from "./knot.ts";
 
 type Call = { url: string; init: RequestInit };
 function fake(responses: Array<Response | Error>) {
@@ -25,17 +25,17 @@ test("createPage / getPage / replace / comments: URLs, methods, headers, bodies"
 		json({ id: "c2", thread_id: "c2" }, 201),
 	]);
 	assert.deepEqual(await knot.createPage("T", "parent"), { id: P1, createdBy: "bot" });
-	await knot.replace("p1", "# md");
-	assert.equal((await knot.listComments("p1"))[0].body, "hi");
-	assert.deepEqual(await knot.addComment("p1", "q"), { id: "c2", thread_id: "c2" });
+	await knot.replace(P1, "# md");
+	assert.equal((await knot.listComments(P1))[0].body, "hi");
+	assert.deepEqual(await knot.addComment(P1, "q"), { id: "c2", thread_id: "c2" });
 
 	assert.equal(calls[0].url, "https://knot.example.com/api/docs");
 	assert.equal(calls[0].init.method, "POST");
 	assert.deepEqual(JSON.parse(calls[0].init.body as string), { title: "T", parent_id: "parent" });
-	assert.equal(calls[1].url, "https://knot.example.com/api/docs/p1/markdown?mode=replace");
+	assert.equal(calls[1].url, `https://knot.example.com/api/docs/${P1}/markdown?mode=replace`);
 	assert.equal((calls[1].init.headers as Record<string, string>)["Content-Type"], "text/markdown");
 	assert.equal(calls[1].init.body, "# md");
-	assert.equal(calls[2].url, "https://knot.example.com/api/docs/p1/comments?include_resolved=true");
+	assert.equal(calls[2].url, `https://knot.example.com/api/docs/${P1}/comments?include_resolved=true`);
 	assert.deepEqual(JSON.parse(calls[3].init.body as string), { body: "q" });
 	for (const c of calls) {
 		assert.equal((c.init.headers as Record<string, string>).Authorization, "Bearer TOKEN-123456");
@@ -46,31 +46,31 @@ test("createPage / getPage / replace / comments: URLs, methods, headers, bodies"
 
 test("429,429,204 -> resolves after sleeping 1s, 2s", async () => {
 	const { knot, sleeps, calls } = fake([new Response("", { status: 429 }), new Response("", { status: 429 }), new Response(null, { status: 204 })]);
-	await knot.replace("p", "x");
+	await knot.replace(P1, "x");
 	assert.deepEqual(sleeps, [1000, 2000]);
 	assert.equal(calls.length, 3);
 });
 
 test("Retry-After is honoured; network errors are retried", async () => {
 	const { knot, sleeps } = fake([new Response("", { status: 429, headers: { "retry-after": "3" } }), new TypeError("fetch failed"), new Response(null, { status: 204 })]);
-	await knot.replace("p", "x");
+	await knot.replace(P1, "x");
 	assert.deepEqual(sleeps, [3000, 2000]);
 });
 
 test("5 consecutive 500s -> rejects after 5 calls, message has no token", async () => {
 	const { knot, calls } = fake(Array.from({ length: 6 }, () => new Response("boom", { status: 500 })));
-	await assert.rejects(knot.replace("p", "x"), (e: Error) => !e.message.includes("TOKEN-123456") && /500/.test(e.message));
+	await assert.rejects(knot.replace(P1, "x"), (e: Error) => !e.message.includes("TOKEN-123456") && /500/.test(e.message));
 	assert.equal(calls.length, 5);
 });
 
 test("401/403 -> KnotAuthError, no retry; other 4xx -> plain error, no retry", async () => {
 	let f = fake([new Response("", { status: 401 })]);
-	await assert.rejects(f.knot.replace("p", "x"), KnotAuthError);
+	await assert.rejects(f.knot.replace(P1, "x"), KnotAuthError);
 	assert.equal(f.calls.length, 1);
 	f = fake([new Response("", { status: 403 })]);
-	await assert.rejects(f.knot.listComments("p"), KnotAuthError);
+	await assert.rejects(f.knot.listComments(P1), KnotAuthError);
 	f = fake([new Response("", { status: 404 })]);
-	await assert.rejects(f.knot.listComments("p"), (e: Error) => !(e instanceof KnotAuthError));
+	await assert.rejects(f.knot.listComments(P1), (e: Error) => !(e instanceof KnotAuthError));
 	assert.equal(f.calls.length, 1);
 });
 
@@ -89,7 +89,7 @@ test("hostile error codes and page ids from the server are not trusted", async (
 test("missing token -> KnotAuthError without calling fetch", async () => {
 	const calls: unknown[] = [];
 	const knot = createKnot({ fetch: (async (...a: unknown[]) => void calls.push(a)) as unknown as typeof fetch, baseUrl: "https://k", token: () => undefined, sleep: async () => {} });
-	await assert.rejects(knot.listComments("p"), KnotAuthError);
+	await assert.rejects(knot.listComments(P1), KnotAuthError);
 	assert.equal(calls.length, 0);
 });
 
@@ -102,8 +102,38 @@ test("tokenVarFor: exact provider, then '*', else undefined", () => {
 
 test("rename: PATCH with a JSON title", async () => {
 	const { knot, calls } = fake([new Response(null, { status: 200 })]);
-	await knot.rename("p1", "New name");
-	assert.equal(calls[0].url, "https://knot.example.com/api/docs/p1");
+	await knot.rename(P1, "New name");
+	assert.equal(calls[0].url, `https://knot.example.com/api/docs/${P1}`);
 	assert.equal(calls[0].init.method, "PATCH");
 	assert.deepEqual(JSON.parse(calls[0].init.body as string), { title: "New name" });
+});
+
+test("page ids in request paths must be UUIDs before any request", async () => {
+	const { knot, calls } = fake([]);
+	for (const request of [
+		() => knot.replace("../../admin", "x"),
+		() => knot.rename("../../admin", "x"),
+		() => knot.listComments("../../admin"),
+		() => knot.addComment("../../admin", "x"),
+	]) await assert.rejects(request, /invalid Knot page id/);
+	assert.equal(calls.length, 0);
+});
+
+test("listComments rejects bodies over 2 MiB, including an early content-length rejection", async () => {
+	const max = 2 * 1024 * 1024;
+	let f = fake([new Response(`["${"A".repeat(max)}"]`, { status: 200 })]);
+	await assert.rejects(f.knot.listComments(P1), /2 MiB/);
+	f = fake([json([], 200, { "content-length": String(max + 1) })]);
+	await assert.rejects(f.knot.listComments(P1), /2 MiB/);
+});
+
+test("listComments rejects a JSON response that is not an array", async () => {
+	const { knot } = fake([json({ comments: [] })]);
+	await assert.rejects(knot.listComments(P1), /array/);
+});
+
+test("oversized, non-JSON and non-array comment bodies are KnotResponseError, not an outage", async () => {
+	for (const r of [new Response("<html>", { status: 200 }), json({ a: 1 }), json([], 200, { "content-length": String(3 * 1024 * 1024) })]) {
+		await assert.rejects(fake([r]).knot.listComments(P1), KnotResponseError);
+	}
 });
