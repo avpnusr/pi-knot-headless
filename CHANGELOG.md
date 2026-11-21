@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-11-21
 
 - **Orchestrator groups.** A pi-subagents workflow is now shown as `Orchestrator N` with its own table of workers (and their task text) instead of a bare `workflow` row plus unrelated worker rows. Directly launched subagents get a separate `Direct subagents` table. Running orchestrators and the last finished one stay expanded; older finished ones shrink to one line. Without the pi-subagents tree snapshot the Agents section looks as before.
 - **Security hardening** (independent Opus review, round 1 and 2):
@@ -9,9 +9,6 @@
   - if the page creator equals `ownerUid` (agent and owner share an account) inbound Knot answers are disabled, `knot_ask` says so, and the warning repeats on every start;
   - restored page ids are validated, comment responses are size-capped and shape-checked, an in-flight poll cannot swallow an answer at shutdown, the comment cursor is restored session-wide, URLs ending in a bare `?`/`#` are rejected;
   - question comments are defanged more strictly (runs of `//`, `www.`, `<`, reference-link definitions) and are cut at a character boundary.
-
-## [0.2.0] - 2026-11-21
-
 - Ended page: outcome line and usage line (tokens, list-price estimate, `≥` while unresolved) from pi-subagents' cost data.
 - Nested fan-out count per subagent row and in the outcome line.
 - Optional, opt-in LLM summarizer (`summarizer` setting, no default model): one-sentence summary, optional page title, strict input allow-list, rate limits, own usage accounting.
