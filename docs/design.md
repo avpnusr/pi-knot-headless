@@ -1,11 +1,11 @@
-# knot-report — headless session dashboard in Knot
+# pi-knot-headless — headless session dashboard in Knot
 
-Date: 2026-11-21 · Status: **rev 2 (after Opus-5-5 review), awaiting approval** · Approach chosen by user: **B (extension only)**
+Date: 2026-11-21 · Status: **rev 3 (public repo, portable configuration)** · Approach chosen by user: **B (extension only)**
 
 ## Intent and why
-The user runs pi sessions "headless": watch status and answer questions from Knot
-(https://knot.example.com) instead of the terminal. Each session gets one subpage under
-**AI Task-List** (`<PARENT_PAGE_ID>`) showing who is doing what, what needs the user,
+The user runs pi sessions "headless": watch status and answer questions from a Knot wiki
+(self-hosted, e.g. `https://knot.example.com`) instead of the terminal. Each session gets one subpage under
+a configurable parent page (`parentPageId`) showing who is doing what, what needs the user,
 and what the model decided. The user's comments on the page flow back into the session.
 
 ## Goals
@@ -30,12 +30,27 @@ and what the model decided. The user's comments on the page flow back into the s
 - pi extension API (docs `extensions.md`): `registerTool` (tool `execute` may return `terminate: true`), `registerCommand`, events `session_start|session_shutdown(reason)|agent_settled|model_select|tool_execution_*`, `pi.sendUserMessage(text,{deliverAs})` (while streaming without `deliverAs` it is **rejected**; idle it sends and starts a turn; `expandPromptTemplates` default false), `pi.appendEntry`, `ctx.mode`, `ctx.model`, `ctx.cwd`, `ctx.sessionManager`, `ctx.ui.setStatus/notify`. Auto-discovery `~/.pi/agent/extensions/<name>/index.ts`, `/reload`.
 - pi-subagents: **background children load ambient extensions inside the detached runner** (`extension-api.md` ~494); `PI_SUBAGENT_CHILD=1` marks them (inherited by processes they spawn). Local foreground children run in the parent process and do not load ambient extensions. `pi.events` is in-process, **not replayed** after restart. State source: in-process RPC `subagents:rpc:v1:request` method `status` (`data.fleet`, `asyncSnapshot`), fallback `status.json` under the `asyncDir` from event payloads (no hardcoded `/tmp` path). `lastUpdate` is not a heartbeat. Foreground children arrive as `tool_execution_update` of the `subagent` tool, keyed `(toolCallId, runId, index)`.
 - Needs a long-lived interactive/RPC pi (e.g. tmux).
-- Knot token per `AGENTS.md`, chosen from the provider of the model **at page creation**; the provider key (not the value) is stored with the page state and reused. Missing env var → disable with one `ctx.ui.notify`. Values never printed, logged, stored or rendered.
+- Knot token: the env var is looked up in config `tokenEnv` by the provider of the model **at page creation** (`"*"` = fallback); the provider string (not the value) is stored with the page state and reused. Missing env var → disable with one `ctx.ui.notify`. Values never printed, logged, stored or rendered.
 
 ## Approaches considered
 A. Pure LLM subagent — rejected (cannot inject into parent, burns quota, layout drifts). **B. Extension only — chosen.** C. B + small LLM summarizer — deferred, re-ask.
 
 ## Design
+
+### Configuration (portable, nothing user-specific in code)
+Read once at `session_start` from `pi.getSettings()["pi-knot-headless"]` (verified 2026-11-21: `getSettings()` keeps unknown extension keys; global `~/.pi/agent/settings.json` and project `.pi/settings.json` are merged, project wins). Environment variables override the three connection keys.
+
+| Key | Env override | Required | Meaning |
+|---|---|---|---|
+| `url` | `KNOT_URL` | yes | Knot base URL, `https` (plain `http` only for `localhost`), no trailing slash |
+| `parentPageId` | `KNOT_PARENT_PAGE_ID` | yes | UUID of the page that holds all session subpages |
+| `ownerUid` | `KNOT_OWNER_UID` | recommended | Knot user id allowed to answer. If absent: the `created_by` of the parent page, **unless** that equals the agent's own id (learned from the page the extension creates) → then the extension stays inert and notifies |
+| `tokenEnv` | – | no | `{ "<provider>": "ENV_VAR_NAME", "*": "ENV_VAR_NAME" }`; default `{ "*": "KNOT_TOKEN" }` |
+| `secretEnv` | – | no | extra env var names whose values are scrubbed (all `tokenEnv` vars always are) |
+| `askTimeoutMinutes` | – | no | timeout for `normal` questions, default 120 |
+| `enabled` | – | no | default `true` |
+
+Missing or invalid required keys → the extension stays inert and shows one `ctx.ui.notify` naming the key. Secrets (tokens) never live in settings, only env var **names**.
 
 ### Guards (first thing in the factory and every handler)
 Inert (no tools, no timers, no network) if `process.env.PI_SUBAGENT_CHILD === "1"` or `PI_SUBAGENT_RUNNER_PID` is set, or `ctx.mode` is not `tui`/`rpc` (so `pi -p` never creates a page). Disabled via `/knot off`.
@@ -64,7 +79,7 @@ Model rule (tool `promptGuidelines`): when unsure choose the higher severity; ca
 - Delivered messages are **self-contained**: question, options, recommended, user's answer, `why`. Timeout text: “Q3 unanswered on Knot after 2 h; if the user already decided this elsewhere keep that, otherwise proceed with <default>”.
 
 ### Answer intake (security)
-- Only comments whose `author_id` is on the allow-list (config `~/.pi/agent/knot-report/config.json`, default `["<YOUR_KNOT_USER_ID>"]`) are delivered. Bot, foreign and missing authors rejected. Max 4 KB per comment. Edits/deletes ignored.
+- Only comments whose `author_id` equals the configured **owner** (`ownerUid`) are delivered. Foreign, bot and missing authors are rejected. Max 4 KB per comment. Edits/deletes ignored.
 - **Mapping:** reply in a question's comment thread → that question. Top-level comment starting `Q3` (optionally `Q3 2` = option 2) → that question. Any other comment → general message “[Knot message from user]”; if exactly one question is open it is delivered as “interpreted as answer to Q3 (<question>)” so the model can push back. First answer wins; question moves to the log as 👤.
 - **Exactly-once:** a watermark (newest delivered comment `id` + `created_at`) is persisted via `appendEntry`; baseline set at page creation. Advance the watermark, then send; roll back only if `sendUserMessage` throws. All Knot I/O runs in one serialized loop.
 - **Delivery:** always `pi.sendUserMessage(text,{deliverAs:"steer"})`; everything from one poll is batched into one message; never `expandPromptTemplates`. If the head is inside a long foreground `subagent` call, steer waits: page shows “answer received, queued”.
