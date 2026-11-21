@@ -13,11 +13,14 @@ export class FakeKnot implements Knot {
 	calls = 0;
 	failWith?: Error;
 	failReplace?: Error;
+	renames: string[] = [];
+	failRename?: Error;
 	private seq = 0;
 	private chk() { this.calls++; if (this.failWith) throw this.failWith; }
 	private stamp() { return `2026-11-21T10:00:${String(++this.seq).padStart(2, "0")}.000000Z`; }
 	async createPage(title: string) { this.chk(); this.created.push(title); return { id: `page${this.created.length}`, createdBy: BOT }; }
 	async replace(_id: string, md: string) { this.chk(); if (this.failReplace) throw this.failReplace; this.replaces.push(md); }
+	async rename(_id: string, title: string) { this.chk(); if (this.failRename) throw this.failRename; this.renames.push(title); }
 	async listComments() { this.chk(); return [...this.comments]; }
 	async addComment(_id: string, body: string) {
 		this.chk();
@@ -42,10 +45,19 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 		tools: new Map<string, any>(), commands: new Map<string, any>(), entries, sent: [] as { text: string; opts: any }[],
 		notes: [] as string[], status: [] as (string | undefined)[], settings, sendThrows: false, throwOnAppend: false,
 		fleet: { entries: [] as any[], totalActive: 0 } as any, snapshot: undefined as any, cost: undefined as any,
+		llm: { calls: [] as any[], text: "Two agents are fixing the build.", usage: { totalTokens: 100, cost: { total: 0.001 } }, throws: undefined as Error | undefined, models: [] as string[] },
 		pi: undefined as any,
 		ctx: (over: any = {}) => ({
 			mode: "tui", model: { provider: "claude-bridge", id: "opus" }, cwd: "/work/demo",
 			sessionManager: { getBranch: () => entries, getSessionName: () => undefined },
+			modelRegistry: {
+				find: (p: string, id: string) => (h.llm.models.includes(`${p}/${id}`) ? { provider: p, id } : undefined),
+				complete: async (model: any, context: any, options: any) => {
+					h.llm.calls.push({ model, context, options });
+					if (h.llm.throws) throw h.llm.throws;
+					return { role: "assistant", content: [{ type: "text", text: h.llm.text }], usage: h.llm.usage, stopReason: "stop" };
+				},
+			},
 			ui: { notify: (m: string) => h.notes.push(m), setStatus: (_k: string, t?: string) => h.status.push(t) }, ...over,
 		}),
 		fire: async (ev: string, e: any = {}, c?: any) => { for (const f of handlers.get(ev) ?? []) await f(e, c ?? h.ctx()); },

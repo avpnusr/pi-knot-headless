@@ -11,6 +11,7 @@ export interface Comment {
 export interface Knot {
 	createPage(title: string, parentId: string): Promise<{ id: string; createdBy: string }>;
 	replace(pageId: string, markdown: string): Promise<void>;
+	rename(pageId: string, title: string): Promise<void>;
 	listComments(pageId: string): Promise<Comment[]>;
 	addComment(pageId: string, body: string): Promise<{ id: string; thread_id: string }>;
 }
@@ -76,6 +77,9 @@ export function createKnot(o: {
 		},
 		async replace(pageId, markdown) {
 			await call("POST", `/api/docs/${pageId}/markdown?mode=replace`, markdown, "text/markdown");
+		},
+		async rename(pageId, title) {
+			await call("PATCH", `/api/docs/${pageId}`, JSON.stringify({ title }), "application/json");
 		},
 		async listComments(pageId) {
 			return (await (await call("GET", `/api/docs/${pageId}/comments?include_resolved=true`)).json()) as Comment[];

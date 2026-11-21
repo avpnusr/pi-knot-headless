@@ -1,6 +1,6 @@
 {
   "name": "pi-knot-headless",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run pi headless: a live Knot page shows the session and its subagents, and your comments answer the agent's questions.",
   "type": "module",
   "license": "MIT",

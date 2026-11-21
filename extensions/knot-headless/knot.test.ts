@@ -99,3 +99,11 @@ test("tokenVarFor: exact provider, then '*', else undefined", () => {
 	assert.equal(tokenVarFor("ollama-cloud", map), "Z");
 	assert.equal(tokenVarFor("x", { "claude-bridge": "A" }), undefined);
 });
+
+test("rename: PATCH with a JSON title", async () => {
+	const { knot, calls } = fake([new Response(null, { status: 200 })]);
+	await knot.rename("p1", "New name");
+	assert.equal(calls[0].url, "https://knot.example.com/api/docs/p1");
+	assert.equal(calls[0].init.method, "PATCH");
+	assert.deepEqual(JSON.parse(calls[0].init.body as string), { title: "New name" });
+});

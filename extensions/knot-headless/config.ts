@@ -8,6 +8,8 @@ export interface Config {
 	secretEnv: string[];
 	askTimeoutMinutes: number;
 	enabled: boolean;
+	/** Present only when the user opted in; there is no default model. */
+	summarizer?: { model: string; title: boolean };
 }
 export type ConfigResult = { ok: true; cfg: Config } | { ok: false; reason: string };
 
@@ -48,6 +50,17 @@ export function loadConfig(settings: unknown, env: Record<string, string | undef
 	const askTimeoutMinutes = s.askTimeoutMinutes ?? 120;
 	if (typeof askTimeoutMinutes !== "number" || !Number.isFinite(askTimeoutMinutes) || askTimeoutMinutes <= 0 || askTimeoutMinutes > 525_600) return bad("askTimeoutMinutes", "must be a number between 1 and 525600");
 
+	let summarizer: Config["summarizer"];
+	if (s.summarizer !== undefined) {
+		const z = s.summarizer;
+		if (!z || typeof z !== "object" || Array.isArray(z)) return bad("summarizer", "must be an object { enabled, model, title }");
+		const o = z as Record<string, unknown>;
+		if (o.title !== undefined && typeof o.title !== "boolean") return bad("summarizer", "title must be true or false");
+		if (o.enabled === true) {
+			if (typeof o.model !== "string" || !/^[^/\s]+\/\S+$/.test(o.model)) return bad("summarizer", "needs a model as \"provider/id\" when enabled (there is no default: you choose where session metadata is sent)");
+			summarizer = { model: o.model, title: o.title === true };
+		}
+	}
 	return {
 		ok: true,
 		cfg: {
@@ -58,6 +71,7 @@ export function loadConfig(settings: unknown, env: Record<string, string | undef
 			secretEnv: secretEnv as string[],
 			askTimeoutMinutes,
 			enabled: s.enabled !== false,
+			...(summarizer ? { summarizer } : {}),
 		},
 	};
 }

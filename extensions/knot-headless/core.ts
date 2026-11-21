@@ -89,6 +89,10 @@ export interface State {
 	runs?: number; // settled runs
 	agentsDropped?: number; // rows pushed out of the capped agents list
 	cost?: Cost;
+	summary?: { text: string; model: string; at: number };
+	summaryFp?: string;
+	sum?: { calls: number; tokens: number; usd: number }; // our own accounting of summarizer calls
+	titled?: boolean;
 	dots?: Record<string, number>; // agent name -> palette index, assigned on first sight so dots stay distinct and stable
 	ownIds: string[]; // ids of comments this extension posted (never delivered back, even if owner == agent account)
 }

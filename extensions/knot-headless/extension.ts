@@ -9,6 +9,7 @@ import {
 import { loadConfig, type Config } from "./config.ts";
 import { createKnot, tokenVarFor, KnotAuthError, type Knot } from "./knot.ts";
 import { render, defang } from "./render.ts";
+import { buildSummaryInput, parseSummaryReply, gate, SYSTEM_PROMPT, TITLE_PROMPT } from "./summary.ts";
 
 export interface Deps {
 	now: () => number;
@@ -281,6 +282,51 @@ export function create(pi: any, deps: Deps): Handle {
 		} catch (e) { log(e); }
 	}
 
+	// ---- optional summarizer (only exists when the user configured one) ----------
+	let summarizing = false;
+	let lastSumAt = 0;
+	const sumTimes: number[] = [];
+	async function summarize(ending = false): Promise<void> {
+		const sc = cfg?.summarizer;
+		if (!sc || summarizing || !st.pageId || stopped || !ctxRef?.modelRegistry) return;
+		const secretsNow = secrets();
+		const input = buildSummaryInput(st, secretsNow);
+		const wantTitle = sc.title && !st.titled;
+		const fp = input.fp + (wantTitle ? "t" : "");
+		const now = deps.now();
+		if (!gate({ now, lastAt: lastSumAt, times: sumTimes, sessionCalls: st.sum?.calls ?? 0, fp, lastFp: st.summaryFp, ending })) return;
+		const slash = sc.model.indexOf("/");
+		const model = ctxRef.modelRegistry.find(sc.model.slice(0, slash), sc.model.slice(slash + 1));
+		if (!model) { notifyOnce(`pi-knot-headless: summarizer model "${sc.model}" is not available; the summarizer stays off.`); return; }
+		summarizing = true;
+		lastSumAt = now;
+		sumTimes.push(now);
+		try {
+			const msg = await ctxRef.modelRegistry.complete(
+				model,
+				{ systemPrompt: SYSTEM_PROMPT + (wantTitle ? TITLE_PROMPT : ""), messages: [{ role: "user", content: [{ type: "text", text: input.text }], timestamp: now }] },
+				{ signal: AbortSignal.timeout(ending ? 3000 : 20_000) },
+			);
+			if (stopped && !ending) return;
+			if (msg?.stopReason === "error" || msg?.stopReason === "aborted") throw new Error(msg.errorMessage || "summarizer call failed");
+			const text = (Array.isArray(msg?.content) ? msg.content : []).filter((c: any) => c?.type === "text").map((c: any) => String(c.text)).join("\n");
+			const u = msg?.usage;
+			st = { ...st, summaryFp: fp, sum: { calls: (st.sum?.calls ?? 0) + 1, tokens: (st.sum?.tokens ?? 0) + (Number.isFinite(u?.totalTokens) ? u.totalTokens : 0), usd: (st.sum?.usd ?? 0) + (Number.isFinite(u?.cost?.total) ? u.cost.total : 0) } };
+			const r = parseSummaryReply(text, wantTitle, secretsNow);
+			if (r.summary) st = { ...st, summary: { text: r.summary, model: sc.model, at: now } };
+			if (r.title && st.pageId) {
+				const folder = basename(ctxRef?.cwd ?? "") || "session";
+				const title = `${folder} · ${r.title}`;
+				try { await knot!.rename(st.pageId, title); st = { ...st, title, titled: true }; } catch (e) { log(e); st = { ...st, titled: true }; }
+			}
+			persist();
+		} catch (e) {
+			log(e); // the page simply keeps its previous summary
+		} finally {
+			summarizing = false;
+		}
+	}
+
 	let costPending = false;
 	// read after a run settles (pi-subagents asks for this timing); the last value is what the ended page shows
 	async function readCost(): Promise<void> {
@@ -343,6 +389,7 @@ export function create(pi: any, deps: Deps): Handle {
 			st = { ...st, phase: "ended", lastBeat: deps.now() };
 			persist();
 		}
+		if (finalWrite) await Promise.race([summarize(true), deps.sleep(3500)]); // bounded: the process may be going down
 		const write = finalWrite ? serial(() => writePage(true)).catch(log) : Promise.resolve();
 		stopped = true; // from here on this instance never touches pi or Knot again (the new instance after a reload/new/resume/fork takes over)
 		for (const off of offs.splice(0)) { try { off(); } catch { /* ignore */ } }
@@ -378,6 +425,7 @@ export function create(pi: any, deps: Deps): Handle {
 		st = { ...st, mutated: false, decidedThisRun: 0, runs: (st.runs ?? 0) + (st.pageId ? 1 : 0) };
 		warnedRun = false;
 		void readCost().then(() => handle.tick());
+		void summarize().then(() => handle.tick()); // independent of the cost read: pi-subagents may be absent
 	}));
 
 	onEvent("subagent:async-started", guard(() => { void launchTrigger().then(scheduleFleet); }));
