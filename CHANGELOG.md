@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-21
+
 - **Nested fan-out count works live.** pi-subagents' status snapshot never carried nested runs for async launches (it drops the nested route), so `+N nested` never appeared. The count is now read from the nested-event files via the `nestedRoute` of the `subagent:async-started` event (read-only, validated path, size and count caps, nothing of the route is stored or written to the page), merged with the snapshot count. Async launches only. Upstream cause: nicobailon/pi-subagents#3316.
 - **Knot rule enforced in code.** `knot_ask` now carries the rule that questions, approval gates and choices coming from skills (brainstorming, writing-plans, code-review, ...) must also go through `knot_ask`, so it reaches the system prompt in every session without relying on `AGENTS.md`. Inert in subagent children and whenever reporting is not active.
 - **Task column filled for every launch style.** Subagents launched directly (`{agent, task}`) and `tasks` launches now show their task text (pi-subagents' fleet status never provides one), matched to the row by agent and start time. Chain/`tasks` launches that pi-subagents compiles into workflows get their texts too; scripted workflows show the step label. A workflow that failed before starting any worker no longer appears as an empty Orchestrator group.
