@@ -91,7 +91,7 @@ export interface State {
 	cost?: Cost;
 	summary?: { text: string; model: string; at: number };
 	summaryFp?: string;
-	sum?: { calls: number; tokens: number; usd: number }; // our own accounting of summarizer calls
+	sum?: { calls: number; tokens: number; usd: number; attempts?: number }; // our own accounting of summarizer calls
 	titled?: boolean;
 	dots?: Record<string, number>; // agent name -> palette index, assigned on first sight so dots stay distinct and stable
 	ownIds: string[]; // ids of comments this extension posted (never delivered back, even if owner == agent account)
@@ -134,13 +134,16 @@ export function fmtTokens(n: number): string {
 export function nestedByAgent(snapshot: any): Map<string, { n: number; truncated: boolean }> {
 	const out = new Map<string, { n: number; truncated: boolean }>();
 	if (!snapshot || !Array.isArray(snapshot.runs)) return out;
-	const truncated = num(snapshot.omitted?.children) > 0;
+	// shortcut: attribution is by agent name, so two rows with the same name share one count; upgrade if pi-subagents exposes run ids per fleet row
 	const steps = (node: any): number => (Array.isArray(node?.children) ? node.children.reduce((n: number, c: any) => n + (c?.agent ? 1 : 0) + steps(c), 0) : 0);
+	const cap = num(snapshot.caps?.maxChildrenPerNode) || 8;
 	const topSteps = (node: any) => { // runs -> (nested runs ->) steps; the top-level steps are the first nodes with an agent on each path
 		for (const c of Array.isArray(node?.children) ? node.children : []) {
 			if (c?.agent) {
 				const n = steps(c);
-				if (n > 0) { const prev = out.get(c.agent); out.set(c.agent, { n: Math.max(prev?.n ?? 0, n), truncated }); }
+				// truncated when this step's own child list hit pi-subagents' per-node cap
+				const trunc = (c.children?.length ?? 0) >= cap;
+				if (n > 0) { const prev = out.get(c.agent); out.set(c.agent, { n: Math.max(prev?.n ?? 0, n), truncated: trunc || !!prev?.truncated }); }
 			} else topSteps(c);
 		}
 	};

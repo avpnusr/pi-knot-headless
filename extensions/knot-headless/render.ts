@@ -3,7 +3,7 @@ import { redact, fmtTokens, type State, type Question } from "./core.ts";
 export function esc(text: string, max = 80): string {
 	let t = String(text).replace(/\s+/g, " ").trim();
 	if (t.length > max) t = `${t.slice(0, max - 1)}…`;
-	return t.replace(/([\\`*_{}\[\]<>#|~@])/g, "\\$1").replace(/:\/\//g, ":\\//"); // no live links, mentions or images
+	return t.replace(/([\\`*_{}\[\]<>#|~@])/g, "\\$1").replace(/:\/\//g, ":\\//").replace(/\bwww\./gi, "www\u200b."); // no live links, mentions or images
 }
 
 /** For plain-text comment bodies: neutralise image/link syntax, bare URLs and @mentions without adding backslashes everywhere. */

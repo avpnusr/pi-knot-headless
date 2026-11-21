@@ -59,7 +59,7 @@ Config (global settings only, like the rest): `"summarizer": { "enabled": true, 
 - Cost reducer with a fake RPC: normal, timeout, `unresolvedAsyncChildren>0`, pi-subagents missing; shutdown uses last value.
 - Nested: both sources, truncated source, no nesting.
 - Summarizer (fake `complete`): **off by default makes zero calls and zero state changes**; enabled calls only on state change, honours 120 s/hourly/session limits, input contains no secret/tool output (planted secret in a task is redacted), hostile output (`# heading`, `[x](http://…)`, newline, 10 KB) is escaped/truncated, failure keeps the old summary, abort on shutdown, summary never reaches `sendUserMessage`; invalid `model` disables with one notify; title applied once.
-- Live check on the "🛰 pi sessions" parent: real cost line from a spawned subagent; summarizer with `glm-5.3-flash`; archive pages afterwards.
+- Live check on a parent page: real cost line from a spawned subagent; summarizer with `glm-5.3-flash`; archive pages afterwards.
 
 ## Left to the builder
 Exact wording/emoji of the new lines, prompt text, internal module split (`summary.ts` for the summarizer, `cost.ts` for RPC reads are fine), limits tuning.
@@ -78,7 +78,15 @@ Exact wording/emoji of the new lines, prompt text, internal module split (`summa
 - **Nested (A0):** RPC `status` returns `asyncSnapshot.runs[]` = a tree of nodes `{id, kind, label, state, agent?, model?, children?}`; top-level step nodes carry `agent`, nested runs hang under them in `children` (bounded: 8 children per node, depth 3, `omitted.children` counts what was cut). Nested count per agent row = number of descendant step nodes (nodes with `agent`) below the matching top-level step; `omitted.children > 0` → shown as `N+`. Only active/recent runs are in the snapshot, so a row keeps the last seen count after it finishes. Not live-verified with a real fan-out (needs an Opus `security-reviewer` run); covered by fixtures built from the documented node shape.
 - **`complete()` (C0):** `ctx.modelRegistry.find("ollama-cloud","glm-5.3-flash")` + `complete(model, {systemPrompt, messages:[{role:"user", content:[{type:"text",text}], timestamp}]}, {signal})` returns an `AssistantMessage` with `content[].text`, `usage.{input,output,totalTokens}` and `usage.cost.total` (USD). Works; 1 s.
 - **Rename (C0):** `PATCH /api/docs/{id} {"title"}` → 200 and the title changes (tested on an unrestricted page, archived afterwards). Title feature stays in.
-- **Side finding:** pages can only be created by a bot below an *unrestricted, non-restricted-subtree* page. "AI Agentic Projects" was restricted after v0.1 shipped, which broke the configured parent; the user is asked where session pages should live.
+- **Side finding:** pages can only be created by a bot below an *unrestricted, non-restricted-subtree* page. a page that became restricted after v0.1 shipped broke the configured parent; the user chose to create a suitable page themselves.
 
 ## Live check (2026-11-21, real pi + pi-subagents, ollama-cloud/glm-5.3-flash, temporary root parent, archived afterwards)
 One `knot_ask` (minor) + one foreground `explorer` run, summarizer enabled with `title:true`: the page got the `🧭` sentence and was renamed (`work · Knot Ask Tool Session`); the ended page showed `outcome: 1 run · 1 subagent (1 ✅) · 1 🤖 decision`, `usage: 44k tokens in · 412 out`, `summarizer: 2 calls · 368 tokens`; the user's settings were restored afterwards. Nested fan-out was **not** live-verified (needs an Opus `security-reviewer` fan-out); it is covered by fixtures from the documented snapshot shape.
+
+## Review round (2026-11-21, Opus-5-5 code + security reviewers of v0.2) — fixed
+- The summarizer now honours `active()` (`/knot off`, `enabled:false`, auth failure, print mode on a resumed page): no model call, no rename.
+- A generation counter plus an abort controller discard summarizer/cost results that arrive after shutdown or in a newer session; the title is never changed while ending; a closed (ended) session no longer polls comments.
+- Privacy: the user's own answers reach the model only as "answered"; README states exactly what is sent. Title filter drops `.` and `:`; bare `www.` is defused; rename goes through redaction.
+- Failed attempts count toward the 60-per-session cap (`sum.attempts`); the fingerprint is computed after the title decision (no repeated identical call).
+- Nested: `truncated` is per step (child list reached pi-subagents' per-node cap), not global; same-name rows share a count (documented shortcut). Restored v0.1 state gets consistent counts; an old summary is dropped when the summarizer is off.
+- Known and accepted: the ended page can show a summary up to one phase old if the final bounded call fails; the summarizer call does not go through the serialized loop (it only touches state after its own await); nested counts cover async runs only.

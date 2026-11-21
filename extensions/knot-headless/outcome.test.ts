@@ -72,8 +72,10 @@ test("nestedByAgent: counts descendant step nodes below each top-level step; tru
 	const m = nestedByAgent(snap);
 	assert.deepEqual(m.get("security-reviewer"), { n: 3, truncated: false });
 	assert.equal(m.has("explorer"), false);
-	const t = nestedByAgent({ ...snap, omitted: { runs: 0, children: 2, byteLimitExceeded: false } });
+	// truncated only when that step's own child list reached the per-node cap
+	const t = nestedByAgent({ ...snap, caps: { maxChildrenPerNode: 2 } });
 	assert.equal(t.get("security-reviewer")!.truncated, true);
+	assert.equal(nestedByAgent({ ...snap, omitted: { children: 5 } }).get("security-reviewer")!.truncated, false);
 	assert.equal(nestedByAgent(undefined).size, 0);
 	assert.equal(nestedByAgent({ runs: "nope" }).size, 0);
 });

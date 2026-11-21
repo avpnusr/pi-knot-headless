@@ -20,7 +20,7 @@ export function buildSummaryInput(s: State, secrets: string[]): { text: string; 
 	const body: string[] = [];
 	body.push(`phase: ${s.phase}`, `head model: ${c(s.headModel)}`, `activity: ${c(s.headActivity)}`);
 	body.push("subagents:", ...(s.agents.length ? s.agents.slice(-10).map((a) => `- ${c(a.name)} (${a.state}): ${c(a.task)}`) : ["- none"]));
-	body.push("recent decisions:", ...(s.decisions.length ? s.decisions.slice(-8).map((d) => `- [${d.by}] ${c(d.text)}`) : ["- none"]));
+	body.push("recent decisions:", ...(s.decisions.length ? s.decisions.slice(-8).map((d) => `- [${d.by}] ${c(d.by === "user" ? `${d.text.split(" → ")[0]} → answered` : d.text)}`) : ["- none"]));
 	body.push("open questions:", ...(s.questions.length ? s.questions.slice(0, 5).map((q) => `- ${q.id} ${q.severity}: ${c(q.text)}`) : ["- none"]));
 	const bodyText = body.join("\n");
 	let h = 5381;
@@ -40,7 +40,7 @@ export function parseSummaryReply(raw: string, wantTitle: boolean, secrets: stri
 	if (wantTitle) {
 		const t = find("TITLE");
 		if (t) {
-			const words = clean(t, secrets).replace(/[^\p{L}\p{N} _.,:&+'-]/gu, " ").split(/\s+/).filter(Boolean).slice(0, 6).join(" ").slice(0, 60);
+			const words = clean(t, secrets).replace(/[^\p{L}\p{N} _,&+'-]/gu, " ").split(/\s+/).filter(Boolean).slice(0, 6).join(" ").slice(0, 60);
 			if (words) out.title = words;
 		}
 	}

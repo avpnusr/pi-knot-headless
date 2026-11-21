@@ -595,3 +595,99 @@ test("summarizer: at the end of the session one bounded call (3 s abort) so the 
 	assert.ok(h.llm.calls[0].options.signal instanceof AbortSignal);
 	assert.match(h.knot.replaces.at(-1)!, /^# ✅/);
 });
+
+test("summarizer respects the off switches: /knot off, enabled:false, auth failure, print mode with a restored page", async () => {
+	// /knot off
+	let h = await withSummarizer();
+	await h.commands.get("knot").handler("off", h.ctx());
+	await h.fire("agent_settled"); await h.flush();
+	assert.equal(h.llm.calls.length, 0);
+	assert.equal(h.knot.renames.length, 0);
+	// enabled:false
+	h = harness({ settings: { "pi-knot-headless": { ...SUM, enabled: false } } });
+	h.llm.models.push("ollama-cloud/glm-5.3-flash");
+	await h.start(); await h.fire("agent_settled"); await h.flush();
+	assert.equal(h.llm.calls.length, 0);
+	// auth failure disables the extension
+	h = await withSummarizer();
+	h.knot.failWith = new KnotAuthError("Knot rejected the token (HTTP 401)");
+	await h.handle.tick(true);
+	h.knot.failWith = undefined;
+	await h.fire("agent_settled"); await h.flush();
+	assert.equal(h.llm.calls.length, 0);
+	// print mode on a session whose page id was restored
+	const h1 = await withSummarizer();
+	const h2 = harness({ settings: { "pi-knot-headless": SUM }, entries: h1.entries, knot: h1.knot });
+	h2.llm.models.push("ollama-cloud/glm-5.3-flash");
+	await h2.start("resume", h2.ctx({ mode: "print" }));
+	await h2.fire("agent_settled"); await h2.flush();
+	assert.equal(h2.llm.calls.length, 0);
+});
+
+test("summarizer: unchanged state beyond the gap makes no call; applying the title does not cause one extra identical call", async () => {
+	const h = await withSummarizer();
+	h.llm.text = "TITLE: Fix build\nSUMMARY: Working on it.";
+	await h.fire("agent_settled"); await h.flush();
+	assert.equal(h.llm.calls.length, 1);
+	assert.equal(h.knot.renames.length, 1);
+	h.clock.t += 500_000;
+	await h.fire("agent_settled"); await h.flush();
+	assert.equal(h.llm.calls.length, 1); // same input, title already applied
+});
+
+test("summarizer: failed attempts count toward the per-session cap and the title is never applied while ending", async () => {
+	const h = await withSummarizer({ ...SUM, summarizer: { enabled: true, model: "ollama-cloud/glm-5.3-flash", title: true } });
+	h.llm.throws = new Error("down");
+	await h.fire("agent_settled"); await h.flush();
+	assert.equal(h.handle.state().sum!.attempts, 1);
+	h.llm.throws = undefined;
+	h.llm.text = "TITLE: Late title\nSUMMARY: Done.";
+	await h.fire("session_shutdown", { reason: "quit" });
+	assert.equal(h.knot.renames.length, 0);
+});
+
+test("a summarizer reply that arrives after shutdown is discarded (no state write, no rename)", async () => {
+	const h = await withSummarizer();
+	let release!: () => void;
+	const gateP = new Promise<void>((r) => (release = r));
+	const orig = h.ctx().modelRegistry.complete;
+	void orig;
+	h.llm.text = "TITLE: Late\nSUMMARY: Late summary.";
+	// make the model call hang until we release it
+	const hang = h.llm;
+	const calls = hang.calls;
+	const realCtx = h.ctx;
+	h.ctx = (over: any = {}) => { const c = realCtx(over); const f = c.modelRegistry.complete; c.modelRegistry.complete = async (...a: any[]) => { await gateP; return f(...a); }; return c; };
+	await h.start("reload");
+	await h.fire("agent_settled", {}, h.ctx());
+	await h.fire("session_shutdown", { reason: "reload" });
+	release();
+	await h.flush(); await h.flush();
+	assert.equal(h.knot.renames.length, 0);
+	assert.equal(h.handle.state().summary, undefined);
+	void calls;
+});
+
+test("state saved by v0.1 (no counts) restores consistent counts; old summary is dropped when the summarizer is off", async () => {
+	const h1 = harness();
+	await h1.start();
+	await h1.ask(minor);
+	const saved = structuredClone(h1.entries.at(-1).data);
+	delete saved.counts; delete saved.agentsDropped; saved.summary = { text: "old", model: "m", at: 1 };
+	saved.agents = [{ key: "a", name: "a", model: "m", state: "done", task: "t" }];
+	const h2 = harness({ entries: [{ type: "custom", customType: "knot-headless", data: saved }] });
+	await h2.start("resume");
+	assert.deepEqual(h2.handle.state().counts, { model: 1, user: 0, timeout: 0 });
+	assert.equal(h2.handle.state().agentsDropped, 1);
+	assert.equal(h2.handle.state().summary, undefined);
+});
+
+test("a closing session does not poll and swallow an answer after it ended", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask(critical);
+	await h.fire("session_shutdown", { reason: "quit" });
+	h.knot.reply(h.knot.comments[0].id, "1");
+	await h.handle.tick(true);
+	assert.equal(h.sent.length, 0);
+});

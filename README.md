@@ -85,8 +85,8 @@ Off by default. When enabled it adds one plain sentence under the page header (`
 ```
 
 - **There is no default model**: you choose where session metadata is sent. A cheap, fast model is plenty. A local model keeps everything on your machine.
-- It sends only redacted metadata (title, subagent names/states/task labels, the last decisions, open question texts), never code, tool output or the conversation. The reply is treated as untrusted: first line only, length-limited, redacted and escaped on the page, and it is never sent back into the session.
-- Limits: at most one call per 120 s, 12 per hour, 60 per session, only when something changed, plus one bounded call (3 s) when the page ends. Failures are silent and the page keeps its previous text. The ended page shows how many calls and tokens it used.
+- It sends only redacted metadata: the page title (project folder plus the first words of your first prompt or the session name), subagent names/states/task labels, the last decisions (the model's chosen defaults and auto-decided timeouts as text; **your own answers only as "answered"**) and open question texts. Never code, tool output, question options/reasons, or the rest of the conversation. Redaction is pattern-based, so a secret that matches no pattern or configured env var could still appear in a task label. The reply is treated as untrusted: first line only, length-limited, redacted and escaped on the page, and it is never sent back into the session. It honours `/knot off`, `enabled:false` and auth failures (no call, no rename), and the title is never changed while the session ends.
+- Limits: at most one call per 120 s, 12 per hour, 60 attempts per session (failures count), only when something changed, plus one bounded call (3 s) when the page ends. Failures are silent and the page keeps its previous text. The ended page shows how many calls and tokens it used.
 
 Missing or invalid settings keep the extension inert (no tool is registered) and the status line says `knot: not configured`; `/knot status` names the key. Control it per session with `/knot status | on | off | open`.
 

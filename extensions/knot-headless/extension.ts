@@ -218,7 +218,7 @@ export function create(pi: any, deps: Deps): Handle {
 	}
 
 	async function tickInner(force: boolean): Promise<void> {
-		if (stopped) return;
+		if (stopped || st.phase === "ended") return; // a closing session must not poll and swallow an answer it will never process
 		try { await expire(); } catch (e) { log(e); }
 		if (!active() || !st.pageId) return;
 		try {
@@ -246,7 +246,7 @@ export function create(pi: any, deps: Deps): Handle {
 			const seen = nestedMap.get(name);
 			const prev = st.agents.find((a) => a.key === key);
 			const n = Math.max(seen?.n ?? 0, prev?.nested ?? 0);
-			live.set(key, { key, name, model: String(e.model ?? ""), state: "working", task: String(e.goal ?? e.role ?? ""), ...(n ? { nested: n, nestedTruncated: !!(seen?.truncated || prev?.nestedTruncated) } : {}) });
+			live.set(key, { key, name, model: String(e.model ?? ""), state: "working", task: String(e.goal ?? e.role ?? ""), ...(n ? { nested: n, nestedTruncated: seen ? seen.truncated : !!prev?.nestedTruncated } : {}) });
 		}
 		// a row that left the fleet has finished; if the fleet was truncated we cannot tell, so keep it as it was
 		const carried = st.agents.filter((a) => !live.has(a.key)).map((a) => (a.state === "working" && omitted === 0 ? { ...a, state: "done" as const } : a));
@@ -283,47 +283,57 @@ export function create(pi: any, deps: Deps): Handle {
 	}
 
 	// ---- optional summarizer (only exists when the user configured one) ----------
+	let gen = 0; // bumped on session_start and session_shutdown: async work from an older session must not write into a newer one
+	let sumAbort: AbortController | undefined;
 	let summarizing = false;
 	let lastSumAt = 0;
 	const sumTimes: number[] = [];
 	async function summarize(ending = false): Promise<void> {
 		const sc = cfg?.summarizer;
-		if (!sc || summarizing || !st.pageId || stopped || !ctxRef?.modelRegistry) return;
+		if (!sc || !active() || summarizing || !st.pageId || !ctxRef?.modelRegistry) return; // honours /knot off, enabled:false, auth failures and inert modes
 		const secretsNow = secrets();
 		const input = buildSummaryInput(st, secretsNow);
-		const wantTitle = sc.title && !st.titled;
+		const wantTitle = sc.title && !st.titled && !ending; // never rename while the session is going down
 		const fp = input.fp + (wantTitle ? "t" : "");
 		const now = deps.now();
-		if (!gate({ now, lastAt: lastSumAt, times: sumTimes, sessionCalls: st.sum?.calls ?? 0, fp, lastFp: st.summaryFp, ending })) return;
+		if (!gate({ now, lastAt: lastSumAt, times: sumTimes, sessionCalls: st.sum?.attempts ?? st.sum?.calls ?? 0, fp, lastFp: st.summaryFp, ending })) return;
 		const slash = sc.model.indexOf("/");
 		const model = ctxRef.modelRegistry.find(sc.model.slice(0, slash), sc.model.slice(slash + 1));
 		if (!model) { notifyOnce(`pi-knot-headless: summarizer model "${sc.model}" is not available; the summarizer stays off.`); return; }
 		summarizing = true;
 		lastSumAt = now;
 		sumTimes.push(now);
+		const g = gen;
+		sumAbort = new AbortController();
+		st = { ...st, sum: { calls: st.sum?.calls ?? 0, tokens: st.sum?.tokens ?? 0, usd: st.sum?.usd ?? 0, attempts: (st.sum?.attempts ?? st.sum?.calls ?? 0) + 1 } }; // every attempt counts toward the session cap
 		try {
 			const msg = await ctxRef.modelRegistry.complete(
 				model,
 				{ systemPrompt: SYSTEM_PROMPT + (wantTitle ? TITLE_PROMPT : ""), messages: [{ role: "user", content: [{ type: "text", text: input.text }], timestamp: now }] },
-				{ signal: AbortSignal.timeout(ending ? 3000 : 20_000) },
+				{ signal: AbortSignal.any([AbortSignal.timeout(ending ? 3000 : 20_000), sumAbort.signal]) },
 			);
-			if (stopped && !ending) return;
+			if (g !== gen || stopped) return;
 			if (msg?.stopReason === "error" || msg?.stopReason === "aborted") throw new Error(msg.errorMessage || "summarizer call failed");
 			const text = (Array.isArray(msg?.content) ? msg.content : []).filter((c: any) => c?.type === "text").map((c: any) => String(c.text)).join("\n");
 			const u = msg?.usage;
-			st = { ...st, summaryFp: fp, sum: { calls: (st.sum?.calls ?? 0) + 1, tokens: (st.sum?.tokens ?? 0) + (Number.isFinite(u?.totalTokens) ? u.totalTokens : 0), usd: (st.sum?.usd ?? 0) + (Number.isFinite(u?.cost?.total) ? u.cost.total : 0) } };
+			st = { ...st, sum: { attempts: st.sum?.attempts ?? 0, calls: (st.sum?.calls ?? 0) + 1, tokens: (st.sum?.tokens ?? 0) + (Number.isFinite(u?.totalTokens) ? u.totalTokens : 0), usd: (st.sum?.usd ?? 0) + (Number.isFinite(u?.cost?.total) ? u.cost.total : 0) } };
+			let renamed = st.titled;
 			const r = parseSummaryReply(text, wantTitle, secretsNow);
 			if (r.summary) st = { ...st, summary: { text: r.summary, model: sc.model, at: now } };
 			if (r.title && st.pageId) {
 				const folder = basename(ctxRef?.cwd ?? "") || "session";
 				const title = `${folder} · ${r.title}`;
-				try { await knot!.rename(st.pageId, title); st = { ...st, title, titled: true }; } catch (e) { log(e); st = { ...st, titled: true }; }
+				try { await knot!.rename(st.pageId, clean(title)); renamed = true; if (g === gen && !stopped) st = { ...st, title: clean(title) }; } catch (e) { log(e); renamed = true; }
 			}
+			if (g !== gen || stopped) return;
+			// fingerprint after the title decision, so applying the title does not cause one more identical call
+			st = { ...st, titled: renamed, summaryFp: input.fp + (sc.title && !renamed ? "t" : "") };
 			persist();
 		} catch (e) {
 			log(e); // the page simply keeps its previous summary
 		} finally {
 			summarizing = false;
+			sumAbort = undefined;
 		}
 	}
 
@@ -332,9 +342,10 @@ export function create(pi: any, deps: Deps): Handle {
 	async function readCost(): Promise<void> {
 		if (!st.pageId || stopped || costPending) return;
 		costPending = true;
+		const g = gen;
 		try {
 			const c = parseCost(await rpc("cost"), deps.now());
-			if (c && !stopped) st = { ...st, cost: c };
+			if (c && g === gen && !stopped) st = { ...st, cost: c };
 		} catch (e) { log(e); } finally { costPending = false; }
 	}
 	function scheduleFleet() {
@@ -357,6 +368,7 @@ export function create(pi: any, deps: Deps): Handle {
 	pi.on("session_start", guard(async (event: any, ctx: any) => {
 		ctxRef = ctx;
 		stopped = false;
+		gen++;
 		const prev = (globalThis as any)[TIMER_KEY];
 		if (prev) deps.clearInterval(prev);
 		inertMode = isInert(deps.env, ctx.mode);
@@ -369,7 +381,12 @@ export function create(pi: any, deps: Deps): Handle {
 		st = newState(now, "", head);
 		if (event?.reason !== "new" && event?.reason !== "fork") {
 			const saved = [...(ctx.sessionManager?.getBranch?.() ?? [])].reverse().find((e: any) => e.type === "custom" && e.customType === ENTRY);
-			if (saved?.data?.version === 1) st = { ...saved.data, phase: "idle", agents: [], headModel: head || saved.data.headModel, backgroundRunning: 0, mutated: false, decidedThisRun: 0 };
+			if (saved?.data?.version === 1) {
+				const d = saved.data;
+				const counts = d.counts ?? (d.decisions ?? []).reduce((c: any, x: any) => (x.by === "system" ? c : { ...c, [x.by]: (c[x.by] ?? 0) + 1 }), { model: 0, user: 0, timeout: 0 });
+				st = { ...d, counts, phase: "idle", agents: [], agentsDropped: (d.agentsDropped ?? 0) + (d.agents?.length ?? 0), headModel: head || d.headModel, backgroundRunning: 0, mutated: false, decidedThisRun: 0 };
+				if (!cfg?.summarizer) st = { ...st, summary: undefined, summaryFp: undefined }; // the user switched the summarizer off: stop showing old text
+			}
 		}
 		firstPrompt = ""; warnedRun = false;
 		if (!active()) {
@@ -391,7 +408,10 @@ export function create(pi: any, deps: Deps): Handle {
 		}
 		if (finalWrite) await Promise.race([summarize(true), deps.sleep(3500)]); // bounded: the process may be going down
 		const write = finalWrite ? serial(() => writePage(true)).catch(log) : Promise.resolve();
-		stopped = true; // from here on this instance never touches pi or Knot again (the new instance after a reload/new/resume/fork takes over)
+		stopped = true;
+		gen++;
+		sumAbort?.abort();
+		// from here on this instance never touches pi or Knot again (the new instance after a reload/new/resume/fork takes over)
 		for (const off of offs.splice(0)) { try { off(); } catch { /* ignore */ } }
 		if (finalWrite) await Promise.race([write, deps.sleep(5000)]);
 	}));
@@ -424,8 +444,8 @@ export function create(pi: any, deps: Deps): Handle {
 		}
 		st = { ...st, mutated: false, decidedThisRun: 0, runs: (st.runs ?? 0) + (st.pageId ? 1 : 0) };
 		warnedRun = false;
-		void readCost().then(() => handle.tick());
-		void summarize().then(() => handle.tick()); // independent of the cost read: pi-subagents may be absent
+		void readCost().then(() => handle.tick()).catch(log);
+		void summarize().then(() => handle.tick()).catch(log); // independent of the cost read: pi-subagents may be absent
 	}));
 
 	onEvent("subagent:async-started", guard(() => { void launchTrigger().then(scheduleFleet); }));
