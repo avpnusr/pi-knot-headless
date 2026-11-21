@@ -1,3 +1,5 @@
+import type { Comment } from "./knot.ts";
+
 // Pure logic: guards, redaction, state reducers, inbox mapping. No I/O.
 
 export function isInert(env: Record<string, string | undefined>, mode: string | undefined): boolean {
@@ -118,4 +120,72 @@ export function expireQuestions(s: State, now: number): { state: State; expired:
 	let st = s;
 	for (const q of expired) st = answerQuestion(st, q.id, `${q.recommended ?? "default"} (auto-decided after timeout)`, "timeout", now);
 	return { state: st, expired };
+}
+
+// ---- inbox ------------------------------------------------------------------
+
+export type Mapped =
+	| { kind: "answer"; qid: string; option?: number; text: string }
+	| { kind: "general"; text: string; interpretedQ?: string }
+	| { kind: "ignore" };
+
+const MAX_COMMENT = 4096;
+
+export function newComments(all: Comment[], wm?: { id: string; createdAt: string }): Comment[] {
+	const cmp = (a: Comment, b: Comment) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+	return [...all]
+		.sort(cmp)
+		.filter((c) => !wm || c.created_at > wm.createdAt || (c.created_at === wm.createdAt && c.id > wm.id));
+}
+
+export function mapComment(c: Comment, s: State, owner: string): Mapped {
+	if (!c.author_id || c.author_id !== owner) return { kind: "ignore" };
+	const body = c.body.slice(0, MAX_COMMENT);
+
+	const threaded = c.parent_id ? s.questions.find((q) => q.threadId && (q.threadId === c.thread_id || q.threadId === c.parent_id)) : undefined;
+	if (threaded) {
+		const m = /^\s*(\d+)\b\s*(.*)$/s.exec(body);
+		return withOption(threaded, m ? Number(m[1]) : undefined, m ? m[2] : body);
+	}
+	const m = /^\s*Q(\d+)(?:\s+(\d+)\b)?\s*:?\s*(.*)$/is.exec(body);
+	if (m) {
+		const q = s.questions.find((x) => x.id === `Q${m[1]}`);
+		if (q) return withOption(q, m[2] ? Number(m[2]) : undefined, m[3]);
+	}
+	return { kind: "general", text: body, interpretedQ: s.questions.length === 1 ? s.questions[0].id : undefined };
+}
+
+function withOption(q: Question, option: number | undefined, rest: string): Mapped {
+	const label = option !== undefined ? q.options[option - 1] : undefined;
+	const text = label ? (rest.trim() ? `${label} (${rest.trim()})` : label) : option !== undefined && !rest.trim() ? String(option) : (option !== undefined ? `${option} ${rest}` : rest).trim();
+	return { kind: "answer", qid: q.id, option: label ? option : undefined, text };
+}
+
+const quote = (t: string) => JSON.stringify(t);
+
+export function composeDelivery(items: { mapped: Mapped; s: State }[]): string {
+	const parts: string[] = [];
+	for (const { mapped: m, s } of items) {
+		if (m.kind === "ignore") continue;
+		if (m.kind === "answer") {
+			const q = s.questions.find((x) => x.id === m.qid);
+			if (!q) continue;
+			const opts = q.options.length ? ` — options: ${q.options.map((o, i) => `${i + 1}) ${o}`).join("; ")}` : "";
+			const rec = q.recommended ? ` — recommended: ${q.recommended}` : "";
+			const why = q.why ? ` — why: ${q.why}` : "";
+			parts.push(`Knot answer to ${q.id}: ${quote(q.text)}${opts}${rec}${why} — the user answered: ${quote(m.text)}`);
+		} else {
+			let t = `[Knot message from user] ${quote(m.text)}`;
+			const q = m.interpretedQ ? s.questions.find((x) => x.id === m.interpretedQ) : undefined;
+			if (q) t += ` (interpreted as an answer to ${q.id} ${quote(q.text)}; push back if it was not meant that way)`;
+			else if (s.questions.length > 1) t += ` (Open questions, not answered by this message: ${s.questions.map((x) => `${x.id} ${quote(x.text)}`).join("; ")})`;
+			parts.push(t);
+		}
+	}
+	return parts.join("\n\n");
+}
+
+export function timeoutMessage(q: Question, minutes: number): string {
+	const after = minutes % 60 === 0 ? `${minutes / 60} h` : `${minutes} min`;
+	return `${q.id} ${quote(q.text)} unanswered on Knot after ${after}; if the user already decided this elsewhere keep that, otherwise proceed with: ${q.recommended ?? "your best judgement"}`;
 }
