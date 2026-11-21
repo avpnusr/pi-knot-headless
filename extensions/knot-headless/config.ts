@@ -3,7 +3,7 @@
 export interface Config {
 	url: string;
 	parentPageId: string;
-	ownerUid?: string;
+	ownerUid: string;
 	tokenEnv: Record<string, string>;
 	secretEnv: string[];
 	askTimeoutMinutes: number;
@@ -27,12 +27,13 @@ export function loadConfig(settings: unknown, env: Record<string, string | undef
 	}
 	const local = u.hostname === "localhost" || u.hostname === "127.0.0.1";
 	if (!(u.protocol === "https:" || (u.protocol === "http:" && local))) return bad("url", "must be https (http only for localhost)");
+	if (u.username || u.password || u.search || u.hash) return bad("url", "must not contain credentials, a query or a fragment");
 
 	const parentPageId = env.KNOT_PARENT_PAGE_ID ?? s.parentPageId;
 	if (typeof parentPageId !== "string" || !UUID.test(parentPageId)) return bad("parentPageId", "must be a UUID (or env KNOT_PARENT_PAGE_ID)");
 
 	const ownerUid = env.KNOT_OWNER_UID ?? s.ownerUid;
-	if (ownerUid !== undefined && (typeof ownerUid !== "string" || !UUID.test(ownerUid))) return bad("ownerUid", "must be a UUID");
+	if (typeof ownerUid !== "string" || !UUID.test(ownerUid)) return bad("ownerUid", "is required: the Knot user id (UUID) whose comments may steer the session (or env KNOT_OWNER_UID)");
 
 	let tokenEnv: Record<string, string> = { "*": "KNOT_TOKEN" };
 	if (s.tokenEnv !== undefined) {
@@ -45,14 +46,14 @@ export function loadConfig(settings: unknown, env: Record<string, string | undef
 	if (!Array.isArray(secretEnv) || secretEnv.some((n) => typeof n !== "string")) return bad("secretEnv", "must be an array of env var names");
 
 	const askTimeoutMinutes = s.askTimeoutMinutes ?? 120;
-	if (typeof askTimeoutMinutes !== "number" || !(askTimeoutMinutes > 0)) return bad("askTimeoutMinutes", "must be a positive number");
+	if (typeof askTimeoutMinutes !== "number" || !Number.isFinite(askTimeoutMinutes) || askTimeoutMinutes <= 0 || askTimeoutMinutes > 525_600) return bad("askTimeoutMinutes", "must be a number between 1 and 525600");
 
 	return {
 		ok: true,
 		cfg: {
 			url: url.replace(/\/+$/, ""),
 			parentPageId,
-			ownerUid: ownerUid as string | undefined,
+			ownerUid,
 			tokenEnv,
 			secretEnv: secretEnv as string[],
 			askTimeoutMinutes,

@@ -3,7 +3,12 @@ import { redact, type State, type Question } from "./core.ts";
 export function esc(text: string, max = 80): string {
 	let t = String(text).replace(/\s+/g, " ").trim();
 	if (t.length > max) t = `${t.slice(0, max - 1)}…`;
-	return t.replace(/([\\`*_{}\[\]<>#|~])/g, "\\$1");
+	return t.replace(/([\\`*_{}\[\]<>#|~@])/g, "\\$1").replace(/:\/\//g, ":\\//"); // no live links, mentions or images
+}
+
+/** For plain-text comment bodies: neutralise image/link syntax, bare URLs and @mentions without adding backslashes everywhere. */
+export function defang(text: string): string {
+	return text.replace(/!\[/g, "! [").replace(/\]\(/g, "] (").replace(/:\/\//g, ":\\//").replace(/@/g, "@\u200b");
 }
 
 const PALETTE = ["🟣", "🔵", "🟢", "🟡", "🟠", "🟤"]; // colored circles that render as emoji everywhere (⚫⚪ fall back to text glyphs)
@@ -11,6 +16,7 @@ const GLYPH: Record<string, string> = { working: "▶", done: "✅", failed: "�
 const BY: Record<string, string> = { model: "🤖", user: "👤", timeout: "⏱", system: "🔄" };
 const MAX_AGENTS = 20;
 const MAX_DECISIONS_SHOWN = 8;
+const MAX_QUESTIONS = 10;
 
 const dot = (s: State, name: string): string => {
 	const i = s.dots?.[name];
@@ -36,16 +42,17 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 
 	L.push("## ❓ Needs you", "");
 	if (s.questions.length === 0) L.push("_nothing needs you 🎉_", "");
-	for (const q of s.questions) L.push(...question(q, e, hm));
+	for (const q of s.questions.slice(0, MAX_QUESTIONS)) L.push(...question(q, e, hm));
+	if (s.questions.length > MAX_QUESTIONS) L.push(`_+${s.questions.length - MAX_QUESTIONS} more questions_`, "");
 
 	L.push("## 🤖 Agents", "");
 	if (s.agents.length === 0) L.push("_no subagents yet_", "");
 	else {
 		L.push("| | Agent | Model | State | Task |", "|---|---|---|---|---|");
-		for (const a of s.agents.slice(0, MAX_AGENTS)) {
+		for (const a of s.agents.slice(-MAX_AGENTS)) {
 			L.push(`| ${dot(s, a.name)} | ${e(a.name, 40)} | ${e(a.model, 40)} | ${GLYPH[a.state] ?? "•"} ${a.state} | ${e(a.task)} |`);
 		}
-		if (s.agents.length > MAX_AGENTS) L.push("", `_+${s.agents.length - MAX_AGENTS} more_`);
+		if (s.agents.length > MAX_AGENTS) L.push("", `_+${s.agents.length - MAX_AGENTS} older not shown_`);
 		L.push("");
 	}
 

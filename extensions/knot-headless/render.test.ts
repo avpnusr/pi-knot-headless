@@ -57,7 +57,8 @@ test("secrets are redacted in page and title; long text truncated; size bounded"
 	assert.ok(!out.includes(secret));
 	assert.ok(out.includes("redacted"));
 	assert.ok(out.length < 8192, `size ${out.length}`);
-	assert.ok(out.includes("+5 more"));
+	assert.ok(out.includes("+5 older not shown"));
+	assert.ok(out.includes("agent-24") && !out.includes("| agent-0 |")); // the newest rows stay visible
 });
 
 test("decisions: newest first, icons, +N older beyond 8", () => {
@@ -94,4 +95,17 @@ test("assignDots: first six agents get distinct stable dots, even after rows reo
 	s = assignDots({ ...s, agents: [agent("newcomer"), ...s.agents.slice().reverse()] });
 	const again = [...render(s, O).split("\n").find((l) => l.includes("| architect |"))!.slice(2)][0];
 	assert.equal(again, dots[0]);
+});
+
+test("esc: bare URLs and mentions become inert", () => {
+	assert.ok(!esc("see https://evil.example/x").includes("https://"));
+	assert.ok(esc("ping @alice").includes("\\@alice"));
+});
+
+test("more than 10 questions: the rest is summarised", () => {
+	let s = base();
+	for (let i = 0; i < 12; i++) s = askQuestion(s, { question: `q${i}`, severity: "critical" }, O.now, 1).state;
+	const out = render(s, O);
+	assert.ok(out.includes("### ⏳ Q10 ") && !out.includes("### ⏳ Q11 "));
+	assert.ok(out.includes("+2 more questions"));
 });

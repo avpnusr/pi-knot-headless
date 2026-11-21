@@ -22,6 +22,14 @@ test("redact: secret values and token patterns", () => {
 	assert.ok(out.includes("[redacted]"));
 });
 
+test("redact: a whole PEM block, AWS/Slack/Google keys", () => {
+	const pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nQyNTUxOQAAACD\n-----END OPENSSH PRIVATE KEY-----";
+	const out = redact(`k: ${pem} after AKIAABCDEFGHIJKLMNOP xoxb-1234567890-abcdef AIzaSyA-1234567890abcdefghijk`, []);
+	for (const bad of ["b3BlbnNzaC1", "QyNTUx", "AKIAABCDEFGH", "xoxb-1234", "AIzaSyA-"]) assert.ok(!out.includes(bad), bad);
+	assert.ok(out.includes("after"));
+	assert.ok(redact("-----BEGIN PRIVATE KEY-----\nabcdef", []).indexOf("abcdef") < 0); // unterminated block: cut to the end
+});
+
 test("redact: normal text untouched; secret chars are not a regex", () => {
 	assert.equal(redact("hello world, task 42", []), "hello world, task 42");
 	assert.equal(redact("x a.b*c+d y", ["a.b*c+d"]), "x [redacted] y");

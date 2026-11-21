@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { harness, FakeKnot, OWNER, BOT, PARENT } from "./fakepi.ts";
 import { KnotAuthError } from "./knot.ts";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readGlobalSettings } from "./extension.ts";
 
 const critical = { question: "Drop the prod table?", options: ["yes", "no"], severity: "critical", why: "migration" };
 
@@ -14,20 +18,30 @@ test("inert inside subagent children: registers nothing", () => {
 	assert.equal(h2.tools.size, 0);
 });
 
-test("print mode: no timer, no network, tool answers 'not active'", async () => {
+test("print mode: no timer, no tool, no network", async () => {
 	const h = harness();
 	await h.start("startup", h.ctx({ mode: "print" }));
 	assert.equal(h.intervals.length, 0);
-	const r = await h.ask(critical, h.ctx({ mode: "print" }));
-	assert.match(r.content[0].text, /not active/);
+	assert.equal(h.tools.size, 0);
+	await h.handle.tick(true);
 	assert.equal(h.knot.calls, 0);
 });
 
-test("missing config: tool reports the reason, nothing starts", async () => {
-	const h = harness({ settings: {} });
+test("missing or incomplete config (no url / no ownerUid): no tool, no timer, status says not configured", async () => {
+	for (const settings of [{}, { "pi-knot-headless": { url: "https://knot.example.com", parentPageId: PARENT } }]) {
+		const h = harness({ settings });
+		await h.start();
+		assert.equal(h.intervals.length, 0);
+		assert.equal(h.tools.size, 0);
+		assert.ok(h.status.includes("knot: not configured"));
+	}
+});
+
+test("the tool is registered only when reporting is active", async () => {
+	const h = harness();
+	assert.equal(h.tools.size, 0);
 	await h.start();
-	assert.equal(h.intervals.length, 0);
-	assert.match((await h.ask(critical)).content[0].text, /"url"/);
+	assert.ok(h.tools.has("knot_ask"));
 });
 
 test("no page until a trigger", async () => {
@@ -146,7 +160,9 @@ test("shutdown: reload keeps the page running, quit writes the ended page", asyn
 	const n = h.knot.replaces.length;
 	await h.fire("session_shutdown", { reason: "reload" });
 	assert.equal(h.knot.replaces.length, n);
-	await h.fire("session_shutdown", { reason: "quit" });
+	const h2 = harness({ entries: h.entries, knot: h.knot });
+	await h2.start("reload");
+	await h2.fire("session_shutdown", { reason: "quit" });
 	assert.equal(h.knot.replaces.length, n + 1);
 	assert.match(h.knot.replaces.at(-1)!, /^# ✅/);
 });
@@ -226,23 +242,31 @@ test("critical question: if Knot is unreachable the tool fails and the question 
 	h.knot.failWith = new Error("HTTP 503");
 	await assert.rejects(h.ask(critical), /not reachable/);
 	assert.equal(h.handle.state().questions.length, 0);
+	assert.equal(h.entries.at(-1).data.questions.length, 0); // the undo is persisted too
 });
 
-test("owner defaults to the parent's creator; refuses when that is the agent itself", async () => {
-	const settings = { "pi-knot-headless": { url: "https://knot.example.com", parentPageId: PARENT } };
-	const ok = harness({ settings });
-	await ok.start();
-	await ok.ask(critical);
-	ok.knot.reply(ok.knot.comments[0].id, "1");
-	await ok.handle.tick(true);
-	assert.equal(ok.sent.length, 1);
+test("failed page write after the page exists: only the new question is undone, an answer delivered meanwhile stays delivered", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask(critical);
+	h.knot.reply(h.knot.comments[0].id, "1");
+	await h.handle.tick(true);
+	assert.equal(h.sent.length, 1);
+	h.knot.failReplace = new Error("HTTP 500");
+	await assert.rejects(h.ask({ question: "another?", severity: "critical" }), /not reachable/);
+	h.knot.failReplace = undefined;
+	await h.handle.tick(true);
+	assert.equal(h.sent.length, 1);
+	assert.equal(h.handle.state().questions.length, 0);
+});
 
-	const knot = new FakeKnot();
-	knot.parentCreator = BOT;
-	const bad = harness({ settings, knot });
-	await bad.start();
-	await assert.rejects(bad.ask(critical), /ownerUid|not reachable/);
-	assert.ok(bad.notes.some((n) => /ownerUid/.test(n)));
+test("ownerUid equal to the agent's own account is allowed but warned about, and its own comments are still not delivered", async () => {
+	const h = harness({ settings: { "pi-knot-headless": { url: "https://knot.example.com", parentPageId: PARENT, ownerUid: BOT } } });
+	await h.start();
+	await h.ask(critical);
+	await h.handle.tick(true);
+	assert.equal(h.sent.length, 0);
+	assert.ok(h.notes.some((n) => /own Knot account/.test(n)));
 });
 
 test("subagents: async start shows the row; it turns done when it leaves the fleet", async () => {
@@ -266,15 +290,57 @@ test("subagents: async start shows the row; it turns done when it leaves the fle
 	assert.equal(h.handle.state().backgroundRunning, 0);
 });
 
-test("foreground subagent tool call creates the page and a row that finishes", async () => {
+test("a foreground subagent call creates the page; rows come from the fleet and finish with it", async () => {
 	const h = harness();
 	await h.start();
-	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "t1", args: { agent: "explorer", task: "look around" } });
+	h.fleet = { entries: [{ key: "foreground:r:0", agent: "explorer", model: "glm", role: "scout" }], totalActive: 1 };
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "t1", args: { agent: "explorer", task: "look around", async: false } });
 	await h.handle.tick(true);
 	assert.equal(h.knot.created.length, 1);
-	assert.equal(h.handle.state().agents[0].state, "working");
+	await h.runTimeouts();
+	assert.deepEqual(h.handle.state().agents.map((a) => [a.name, a.task, a.state]), [["explorer", "scout", "working"]]);
+	h.fleet = { entries: [], totalActive: 0 };
 	await h.fire("tool_execution_end", { toolName: "subagent", toolCallId: "t1", isError: false });
+	await h.runTimeouts();
 	assert.equal(h.handle.state().agents[0].state, "done");
+});
+
+test("subagent management calls (status, list) do not create a page", async () => {
+	const h = harness();
+	await h.start();
+	await h.fire("tool_execution_start", { toolName: "subagent", toolCallId: "t1", args: { action: "status" } });
+	await h.handle.tick(true);
+	assert.equal(h.knot.calls, 0);
+});
+
+test("async-complete turns a row that jobs-changed already marked done into failed", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	h.fleet = { entries: [{ key: "k1", agent: "tests", model: "m" }], totalActive: 1 };
+	h.pi.events.emit("subagent:jobs-changed", { version: 1 });
+	await h.runTimeouts();
+	h.fleet = { entries: [], totalActive: 0 };
+	h.pi.events.emit("subagent:jobs-changed", { version: 1 });
+	await h.runTimeouts();
+	assert.equal(h.handle.state().agents[0].state, "done");
+	h.pi.events.emit("subagent:async-complete", { results: [{ agent: "tests", status: "failed" }] });
+	assert.equal(h.handle.state().agents[0].state, "failed");
+});
+
+test("a truncated fleet (omitted > 0) does not turn unseen working rows into done", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	h.fleet = { entries: [{ key: "a", agent: "one" }, { key: "b", agent: "two" }], totalActive: 2 };
+	h.pi.events.emit("subagent:jobs-changed", { version: 1 });
+	await h.runTimeouts();
+	h.fleet = { entries: [{ key: "b", agent: "two" }], totalActive: 2, omitted: 1 } as any;
+	h.pi.events.emit("subagent:jobs-changed", { version: 1 });
+	await h.runTimeouts();
+	assert.deepEqual(h.handle.state().agents.map((a) => a.state), ["working", "working"]);
 });
 
 test("model switch is logged once a page exists; run without logged decisions is flagged", async () => {
@@ -286,10 +352,13 @@ test("model switch is logged once a page exists; run without logged decisions is
 	await h.handle.tick(true);
 	await h.fire("model_select", { model: { id: "sonnet" } });
 	assert.match(h.handle.state().decisions.at(-1)!.text, /model switched to sonnet/);
+	await h.fire("agent_settled"); // end of the run that contained the decisions above
 	await h.fire("agent_start");
 	await h.fire("tool_execution_end", { toolName: "bash" });
+	await h.fire("agent_start"); // a retry / continuation inside the same turn must not reset the counters
 	await h.fire("agent_settled");
 	assert.match(h.handle.state().decisions.at(-1)!.text, /no logged decisions/);
+	assert.equal(h.handle.state().mutated, false);
 });
 
 test("a failing appendEntry or handler never propagates into pi", async () => {
@@ -330,12 +399,58 @@ test("the timer is registered once per session_start and uses the 20 s poll", as
 	assert.equal(((globalThis as any)[Symbol.for("pi-knot-headless.timer")]), h.intervals[1]);
 });
 
-test("comments the extension posted itself are never delivered, even when owner == agent account", async () => {
-	const h = harness({ settings: { "pi-knot-headless": { url: "https://knot.example.com", parentPageId: PARENT, ownerUid: BOT } } });
+test("normal questions still time out while Knot is down, after an auth failure and after /knot off", async () => {
+	for (const how of ["outage", "off"] as const) {
+		const h = harness();
+		await h.start();
+		await h.ask({ question: "db?", options: ["a", "b"], recommended: "a", severity: "normal" });
+		if (how === "outage") h.knot.failWith = new Error("HTTP 500");
+		else await h.commands.get("knot").handler("off", h.ctx());
+		h.clock.t += 2 * 3_600_000 + 1000;
+		await h.handle.tick();
+		assert.equal(h.sent.length, 1, how);
+		assert.match(h.sent[0].text, /proceed with: "a"/);
+	}
+});
+
+test("after shutdown the old instance never touches Knot or pi again", async () => {
+	const h = harness();
 	await h.start();
 	await h.ask(critical);
+	await h.fire("session_shutdown", { reason: "reload" });
+	const calls = h.knot.calls;
+	h.knot.reply(h.knot.comments[0].id, "1");
+	h.pi.events.emit("subagent:jobs-changed", { version: 1 });
+	await h.runTimeouts();
 	await h.handle.tick(true);
-	await h.handle.tick(true);
+	assert.equal(h.knot.calls, calls);
 	assert.equal(h.sent.length, 0);
-	assert.equal(h.handle.state().questions.length, 1);
+});
+
+test("only the global settings file is read: a project's .pi/settings.json cannot redirect the token", () => {
+	const dir = mkdtempSync(join(tmpdir(), "khs-"));
+	mkdirSync(join(dir, "agent"));
+	writeFileSync(join(dir, "agent", "settings.json"), JSON.stringify({ "pi-knot-headless": { url: "https://good.example" } }));
+	const proj = join(dir, "proj", ".pi");
+	mkdirSync(proj, { recursive: true });
+	writeFileSync(join(proj, "settings.json"), JSON.stringify({ "pi-knot-headless": { url: "https://evil.example" } }));
+	const prev = process.cwd();
+	process.chdir(join(dir, "proj"));
+	try {
+		assert.deepEqual(readGlobalSettings({ PI_CODING_AGENT_DIR: join(dir, "agent") }), { url: "https://good.example" });
+		assert.equal(readGlobalSettings({ PI_CODING_AGENT_DIR: join(dir, "nowhere") }), undefined);
+	} finally {
+		process.chdir(prev);
+	}
+});
+
+test("question comments are defanged (no images, links, mentions) and stay under Knot's byte limit", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "see ![x](https://evil.example/p.png) @alice https://phish.example " + "é".repeat(3000), severity: "critical" });
+	const body = h.knot.comments[0].body;
+	assert.ok(!body.includes("![x]("));
+	assert.ok(!body.includes("https://"));
+	assert.ok(!/@[a-z]/.test(body));
+	assert.ok(Buffer.byteLength(body) <= 3500);
 });

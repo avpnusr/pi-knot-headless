@@ -13,7 +13,10 @@ const SECRET_PATTERNS: RegExp[] = [
 	/\bsk-[A-Za-z0-9_-]{12,}/g,
 	/\bgh[pousr]_[A-Za-z0-9]{16,}/g,
 	/eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
-	/-----BEGIN [A-Z ]*-----[^\n]*/g,
+	/-----BEGIN [A-Z ]*-----[\s\S]*?(?:-----END [A-Z ]*-----|$)/g,
+	/\bAKIA[0-9A-Z]{16}\b/g,
+	/\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
+	/\bAIza[0-9A-Za-z_-]{20,}/g,
 ];
 
 export function redact(text: string, secretValues: string[]): string {
@@ -133,16 +136,22 @@ export type Mapped =
 
 const MAX_COMMENT = 4096;
 
+// Pads the fractional seconds so "…:05Z", "…:05.5Z" and "…:05.000000Z" compare correctly as strings.
+export function normTs(s: string): string {
+	const m = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(.*)$/.exec(s);
+	return m ? `${m[1]}.${(m[2] ?? "").padEnd(9, "0")}${m[3]}` : s;
+}
+
 export function newComments(all: Comment[], wm?: { id: string; createdAt: string }): Comment[] {
-	const cmp = (a: Comment, b: Comment) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-	return [...all]
-		.sort(cmp)
-		.filter((c) => !wm || c.created_at > wm.createdAt || (c.created_at === wm.createdAt && c.id > wm.id));
+	const t = (c: Comment) => normTs(c.created_at);
+	const cmp = (a: Comment, b: Comment) => (t(a) < t(b) ? -1 : t(a) > t(b) ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+	const w = wm ? normTs(wm.createdAt) : undefined;
+	return [...all].sort(cmp).filter((c) => !wm || t(c) > w! || (t(c) === w && c.id > wm.id));
 }
 
 export function mapComment(c: Comment, s: State, owner: string): Mapped {
 	if (!c.author_id || c.author_id !== owner) return { kind: "ignore" };
-	const body = c.body.slice(0, MAX_COMMENT);
+	const body = String(c.body ?? "").slice(0, MAX_COMMENT);
 
 	const threaded = c.parent_id ? s.questions.find((q) => q.threadId && (q.threadId === c.thread_id || q.threadId === c.parent_id)) : undefined;
 	if (threaded) {
@@ -172,9 +181,10 @@ export function composeDelivery(items: { mapped: Mapped; s: State }[]): string {
 		if (m.kind === "answer") {
 			const q = s.questions.find((x) => x.id === m.qid);
 			if (!q) continue;
-			const opts = q.options.length ? ` — options: ${q.options.map((o, i) => `${i + 1}) ${o}`).join("; ")}` : "";
-			const rec = q.recommended ? ` — recommended: ${q.recommended}` : "";
-			const why = q.why ? ` — why: ${q.why}` : "";
+			// everything the model wrote is quoted too: it must not be able to forge a "[Knot message from user]" line
+			const opts = q.options.length ? ` — options: ${q.options.map((o, i) => `${i + 1}) ${quote(o)}`).join("; ")}` : "";
+			const rec = q.recommended ? ` — recommended: ${quote(q.recommended)}` : "";
+			const why = q.why ? ` — why: ${quote(q.why)}` : "";
 			parts.push(`Knot answer to ${q.id}: ${quote(q.text)}${opts}${rec}${why} — the user answered: ${quote(m.text)}`);
 		} else {
 			let t = `[Knot message from user] ${quote(m.text)}`;
@@ -189,7 +199,7 @@ export function composeDelivery(items: { mapped: Mapped; s: State }[]): string {
 
 export function timeoutMessage(q: Question, minutes: number): string {
 	const after = minutes % 60 === 0 ? `${minutes / 60} h` : `${minutes} min`;
-	return `${q.id} ${quote(q.text)} unanswered on Knot after ${after}; if the user already decided this elsewhere keep that, otherwise proceed with: ${q.recommended ?? "your best judgement"}`;
+	return `${q.id} ${quote(q.text)} unanswered on Knot after ${after}; if the user already decided this elsewhere keep that, otherwise proceed with: ${q.recommended ? quote(q.recommended) : "your best judgement"}`;
 }
 
 export const PALETTE_SIZE = 6;

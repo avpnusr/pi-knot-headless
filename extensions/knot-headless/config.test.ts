@@ -4,7 +4,7 @@ import { loadConfig } from "./config.ts";
 
 const U1 = "11111111-2222-3333-4444-555555555555";
 const U2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-const base = { url: "https://knot.example.com/", parentPageId: U1 };
+const base = { url: "https://knot.example.com/", parentPageId: U1, ownerUid: U2 };
 
 test("valid minimal config gets defaults, trailing slash stripped", () => {
 	const r = loadConfig(base, {});
@@ -14,7 +14,7 @@ test("valid minimal config gets defaults, trailing slash stripped", () => {
 	assert.equal(r.cfg.askTimeoutMinutes, 120);
 	assert.equal(r.cfg.enabled, true);
 	assert.deepEqual(r.cfg.secretEnv, []);
-	assert.equal(r.cfg.ownerUid, undefined);
+	assert.equal(r.cfg.ownerUid, U2);
 });
 
 test("env overrides settings", () => {
@@ -23,12 +23,17 @@ test("env overrides settings", () => {
 	assert.equal(r.cfg.url, "https://other.example.org");
 	assert.equal(r.cfg.parentPageId, U2);
 	assert.equal(r.cfg.ownerUid, U1);
+	assert.ok(loadConfig({ url: "https://k.example", parentPageId: U1 }, { KNOT_OWNER_UID: U2 }).ok);
 });
 
 test("missing or invalid keys name the key", () => {
 	for (const [s, key] of [
-		[{ parentPageId: U1 }, "url"],
-		[{ url: "https://x.example" }, "parentPageId"],
+		[{ parentPageId: U1, ownerUid: U2 }, "url"],
+		[{ url: "https://x.example", ownerUid: U2 }, "parentPageId"],
+		[{ url: "https://x.example", parentPageId: U1 }, "ownerUid"],
+		[{ ...base, askTimeoutMinutes: 1e12 }, "askTimeoutMinutes"],
+		[{ ...base, url: "https://user:pw@knot.example.com" }, "url"],
+		[{ ...base, url: "https://knot.example.com/?x=1" }, "url"],
 		[{ ...base, parentPageId: "nope" }, "parentPageId"],
 		[{ ...base, ownerUid: "nope" }, "ownerUid"],
 		[{ ...base, askTimeoutMinutes: -1 }, "askTimeoutMinutes"],

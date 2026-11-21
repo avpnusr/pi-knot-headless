@@ -1,6 +1,6 @@
 # pi-knot-headless — headless session dashboard in Knot
 
-Date: 2026-11-21 · Status: **rev 3 (public repo, portable configuration)** · Approach chosen by user: **B (extension only)**
+Date: 2026-11-21 · Status: **rev 4 (after the Opus-5-5 code and security review of v0.1.0)** · Approach chosen by user: **B (extension only)**
 
 ## Intent and why
 The user runs pi sessions "headless": watch status and answer questions from a Knot wiki
@@ -42,19 +42,19 @@ A. Pure LLM subagent — rejected (cannot inject into parent, burns quota, layou
 ## Design
 
 ### Configuration (portable, nothing user-specific in code)
-Read once at `session_start` from `pi.getSettings()["pi-knot-headless"]` (verified 2026-11-21: `getSettings()` keeps unknown extension keys; global `~/.pi/agent/settings.json` and project `.pi/settings.json` are merged, project wins). Environment variables override the three connection keys.
+Read once at `session_start` from the `"pi-knot-headless"` block of the **global** `settings.json` (`$PI_CODING_AGENT_DIR` or `~/.pi/agent`). **Project `.pi/settings.json` is ignored on purpose** (security review: a cloned repo could otherwise redirect `url`/`tokenEnv` and receive the token, or pick `ownerUid`). `pi.getSettings()` is not used because it merges project settings. Environment variables override the three connection keys.
 
 | Key | Env override | Required | Meaning |
 |---|---|---|---|
 | `url` | `KNOT_URL` | yes | Knot base URL, `https` (plain `http` only for `localhost`), no trailing slash |
 | `parentPageId` | `KNOT_PARENT_PAGE_ID` | yes | UUID of the page that holds all session subpages |
-| `ownerUid` | `KNOT_OWNER_UID` | recommended | Knot user id allowed to answer. If absent: the `created_by` of the parent page, **unless** that equals the agent's own id (learned from the page the extension creates) → then the extension stays inert and notifies |
+| `ownerUid` | `KNOT_OWNER_UID` | **yes** | Knot user id allowed to answer. No inference from the parent page any more (it could be a different bot). If it equals the creator of the page the agent made, the extension warns once: anyone holding that token can then answer as the owner |
 | `tokenEnv` | – | no | `{ "<provider>": "ENV_VAR_NAME", "*": "ENV_VAR_NAME" }`; default `{ "*": "KNOT_TOKEN" }` |
 | `secretEnv` | – | no | extra env var names whose values are scrubbed (all `tokenEnv` vars always are) |
 | `askTimeoutMinutes` | – | no | timeout for `normal` questions, default 120 |
 | `enabled` | – | no | default `true` |
 
-Missing or invalid required keys → the extension stays inert and shows one `ctx.ui.notify` naming the key. Secrets (tokens) never live in settings, only env var **names**.
+Missing or invalid required keys → the extension stays inert, registers no tool, and the status line shows `knot: not configured` (`/knot status` names the key). Secrets (tokens) never live in settings, only env var **names**.
 
 ### Guards (first thing in the factory and every handler)
 Inert (no tools, no timers, no network) if `process.env.PI_SUBAGENT_CHILD === "1"` or `PI_SUBAGENT_RUNNER_PID` is set, or `ctx.mode` is not `tui`/`rpc` (so `pi -p` never creates a page). Disabled via `/knot off`.
@@ -128,3 +128,14 @@ Palette, exact emoji/wording, debounce numbers, snapshot tooling, internal file 
 
 ## Follow-up to raise with the user at the end
 **Approach C** — optional LLM summarizer / nicer speaking names?
+
+## Review round (2026-11-21, Opus-5-5 code + security reviewers) — what changed after v0.1.0 was first built
+- Foreground/background rows now come only from pi-subagents' fleet status (`subagent` is async by default; the fleet already includes foreground children). The synthetic foreground rows were removed; the Task column uses `goal ?? role`.
+- A fleet read is scheduled on `subagent` tool start/end and on every poll; `async-complete` turns done rows into failed; a truncated fleet (`omitted > 0`) no longer marks unseen rows done; the table shows the newest 20 rows.
+- Timeouts of `normal` questions no longer depend on Knot (they run first in every tick, also when Knot is down, rejected the token, or `/knot off`).
+- `knot_ask` failure undoes only its own question (persisted); `knot_ask` fails fast when Knot is offline; every request has a 10 s timeout and `redirect:"error"`.
+- After `session_shutdown` an instance is dead (stopped flag, event listeners removed); the tool is registered in `session_start` only when reporting is active.
+- Model-authored text (options, recommended, why) is quoted in every message sent back as the user; question comments are defanged and capped at 3500 bytes; PEM blocks, AWS/Slack/Google keys are redacted; bare URLs and @mentions are escaped.
+- Comment timestamps are compared with padded fractions; resolved threads are included (`?include_resolved=true`); `agent_start` no longer resets run counters (`agent_settled` does).
+- Declined: removing the token from `process.env` (the user's own agents use those variables from bash). Documented as residual risk.
+- Not built in v0.1.0: cost/outcome on the ended page, nested fan-out count, "answer received, queued" marker, subagent launches logged as decisions, `error.log`.

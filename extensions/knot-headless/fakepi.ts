@@ -12,13 +12,12 @@ export class FakeKnot implements Knot {
 	comments: Comment[] = [];
 	calls = 0;
 	failWith?: Error;
-	parentCreator = OWNER;
+	failReplace?: Error;
 	private seq = 0;
 	private chk() { this.calls++; if (this.failWith) throw this.failWith; }
 	private stamp() { return `2026-11-21T10:00:${String(++this.seq).padStart(2, "0")}.000000Z`; }
 	async createPage(title: string) { this.chk(); this.created.push(title); return { id: `page${this.created.length}`, createdBy: BOT }; }
-	async getPage(id: string) { this.chk(); return { id, createdBy: id.startsWith("page") ? BOT : this.parentCreator }; }
-	async replace(_id: string, md: string) { this.chk(); this.replaces.push(md); }
+	async replace(_id: string, md: string) { this.chk(); if (this.failReplace) throw this.failReplace; this.replaces.push(md); }
 	async listComments() { this.chk(); return [...this.comments]; }
 	async addComment(_id: string, body: string) {
 		this.chk();
@@ -77,7 +76,7 @@ export function harness(o: { settings?: any; env?: Record<string, string>; entri
 	const timeouts: Array<() => void> = [];
 	const intervals: unknown[] = [];
 	const deps: Deps = {
-		now: () => clock.t, env: { KNOT_TOKEN: "tok-123456789", ...(o.env ?? {}) },
+		now: () => clock.t, env: { KNOT_TOKEN: "tok-123456789", ...(o.env ?? {}) }, settings: () => settings["pi-knot-headless"],
 		makeKnot: () => knot, setInterval: (fn) => { intervals.push(fn); return fn; }, clearInterval: () => {},
 		setTimeout: (fn) => { timeouts.push(fn); return fn; }, sleep: () => new Promise(() => {}), log: () => {}, paramsSchema: {}, tz: "UTC",
 	};

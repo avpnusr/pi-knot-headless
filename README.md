@@ -2,7 +2,7 @@
 
 **Run [pi](https://pi.dev) headless.** A live page in your self-hosted [Knot](https://github.com/opendefensecloud/knot) knowledge base shows what your coding session and its subagents are doing, lists the decisions the model made, and turns the questions that need *you* into comments you can answer from your phone. Your answer is delivered straight back into the running session.
 
-![license](https://img.shields.io/badge/license-MIT-blue) ![tests](https://img.shields.io/badge/tests-70%20passing-brightgreen) ![pi package](https://img.shields.io/badge/pi-package-purple)
+![license](https://img.shields.io/badge/license-MIT-blue) ![pi package](https://img.shields.io/badge/pi-package-purple)
 
 | Running | Needs you | Finished |
 |---|---|---|
@@ -50,7 +50,7 @@ pi install git:github.com/avpnusr/pi-knot-headless
 
 ## Configure
 
-Add a block to pi's `settings.json` (`~/.pi/agent/settings.json`; a project's `.pi/settings.json` overrides it):
+Add a block to your **global** pi `settings.json` (`~/.pi/agent/settings.json`, or `$PI_CODING_AGENT_DIR/settings.json`). A project's `.pi/settings.json` is deliberately **ignored**: otherwise a cloned repository could point the extension at its own server and receive your token, or choose who may steer your session.
 
 ```json
 "pi-knot-headless": {
@@ -66,13 +66,13 @@ Add a block to pi's `settings.json` (`~/.pi/agent/settings.json`; a project's `.
 |---|---|---|
 | `url` | `KNOT_URL` | required, `https` (plain `http` only for `localhost`) |
 | `parentPageId` | `KNOT_PARENT_PAGE_ID` | required, UUID of the page that holds the session pages |
-| `ownerUid` | `KNOT_OWNER_UID` | the only user whose comments reach the session. If omitted: the creator of the parent page (refused if that is the agent's own account) |
+| `ownerUid` | `KNOT_OWNER_UID` | **required.** The only Knot user whose comments reach the session. Use your own account, and a *separate* bot token for the agent (see Security) |
 | `tokenEnv` | | maps the **provider of the model** to the *name* of an env var that holds the token; `"*"` is the fallback. Default `{"*": "KNOT_TOKEN"}`. Tokens never go into settings |
 | `secretEnv` | | more env var names whose values are scrubbed from everything written to Knot (the `tokenEnv` ones always are) |
-| `askTimeoutMinutes` | | timeout for `normal` questions, default `120` |
+| `askTimeoutMinutes` | | timeout for `normal` questions, default `120` (1 to 525600) |
 | `enabled` | | default `true` |
 
-Missing or invalid settings keep the extension inert and tell you which key is wrong. Control it per session with `/knot status | on | off | open`.
+Missing or invalid settings keep the extension inert (no tool is registered) and the status line says `knot: not configured`; `/knot status` names the key. Control it per session with `/knot status | on | off | open`.
 
 Tell your agents about it (the tool description already does, this makes it a house rule). In `AGENTS.md`:
 
@@ -88,7 +88,9 @@ after a question; the answer arrives as a user message starting `Knot answer to 
 - Only comments by `ownerUid` are delivered. Other workspace members, bots and comments without an author are ignored, and so are the extension's own comments. Comments are quoted as plain text, so a comment like `/reload` is never run as a command.
 - The page is **write-only**: the extension never reads or parses the page body, so nothing typed into it can steer the session (this is why there are no checkboxes).
 - Everything written to Knot is escaped (no fake structure from model- or subagent-authored text), truncated, and scrubbed of the values of your token env vars and common token patterns.
-- The extension is inert inside subagent child processes and in print/json mode, so a child never creates pages or speaks for you.
+- The extension is inert inside subagent child processes and in print/json mode, so a child never creates pages or speaks for you. Everything the model wrote (question, options, recommended default, reasoning) is quoted again when it is sent back to the session, so model text cannot forge a "message from the user".
+- Question comments are defanged (no images, links or @mentions), and no HTTP redirect is ever followed, so the token cannot be forwarded to another origin.
+- **Residual risks you should know about:** the Knot token lives in pi's environment, which the agent's own shell and subagents inherit. A prompt-injected agent could therefore use it to edit pages or post comments as that account. Give the agent a dedicated bot token with access only to the parent page's subtree, and set `ownerUid` to *your* account, not the bot's (the extension warns if they are the same). Redaction is best-effort pattern matching, not a guarantee.
 - Every Knot call has retry/backoff; an outage or an expired token never breaks the session, it only shows `knot: offline` in the status line.
 
 ## Limitations
@@ -96,13 +98,14 @@ after a question; the answer arrives as a user message starting `Knot answer to 
 - An answer sent while the head model is inside a long foreground subagent call is delivered after that call ends (pi's `steer` semantics).
 - The Task column of background subagents is often empty: pi-subagents redacts the task prompt in its events.
 - Pages are not deleted automatically; finished pages stay as an overview. Archive them in Knot when you no longer need them.
+- The ended page has no cost or outcome line yet, and subagent launches are shown in the table but not logged as decisions. The agents table comes from pi-subagents' fleet status, which lists at most 16 active children at a time.
 - Whether the model logs *every* decision depends on the model following its instructions. The extension adds a `⚠ run ended with no logged decisions` note when a run edited files or ran commands without logging anything.
 
 ## Development
 
 ```bash
-npm test                      # 70 tests, node --test, no dependencies
-scripts/scan.sh               # secret / personal-data scan; install as .git/hooks/pre-push
+npm test                      # node --test, no dependencies
+scripts/scan.sh --history     # secret / personal-data scan of the tree and all commits; install as .git/hooks/pre-push
 scripts/preview.sh out/ && node scripts/shoot.mjs out/   # regenerate the README screenshots
 ```
 

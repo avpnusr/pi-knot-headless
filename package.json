@@ -5,9 +5,29 @@
   "type": "module",
   "license": "MIT",
   "author": "avpnusr",
-  "repository": { "type": "git", "url": "git+https://github.com/avpnusr/pi-knot-headless.git" },
-  "keywords": ["pi-package", "pi-extension", "knot", "headless", "subagents", "dashboard"],
-  "pi": { "extensions": ["./extensions/knot-headless/index.ts"] },
-  "scripts": { "test": "node --test \"extensions/knot-headless/*.test.ts\"" },
-  "peerDependencies": { "typebox": "*" }
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avpnusr/pi-knot-headless.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "knot",
+    "headless",
+    "subagents",
+    "dashboard"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/knot-headless/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test \"extensions/knot-headless/*.test.ts\""
+  },
+  "peerDependencies": {
+    "typebox": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
 }

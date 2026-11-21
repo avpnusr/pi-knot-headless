@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Scans tracked files for secrets and personal data before anything is pushed (this repo is public).
+# Scans tracked files (and with --history every commit) for secrets and personal data before anything is pushed (this repo is public).
 # Extra deny patterns (your hostnames, ids, paths) go into an untracked `.scan-deny` file, one regex per line.
 set -u
 cd "$(git rev-parse --show-toplevel)"
@@ -23,6 +23,16 @@ if [ -f .scan-deny ]; then
 		[ -z "$re" ] && continue
 		echo "$files" | xargs grep -n -i -E "$re" 2>/dev/null | while read -r l; do hit "denied pattern /$re/: $l"; done | grep . && fail=1
 	done < .scan-deny
+fi
+# --history: also scan every reachable commit (a secret that was added and later removed is still public)
+if [ "${1:-}" = "--history" ]; then
+	git log -p --all --format='commit %H%n%an <%ae>%n%B' | grep -n -E "$tokens" | grep -v -E 'AAAAAAAA|abc123def456|abc\.def' | while read -r l; do hit "history: possible secret: $l"; done | grep . && fail=1
+	if [ -f .scan-deny ]; then
+		while read -r re; do
+			[ -z "$re" ] && continue
+			git log -p --all --format='%an <%ae>%n%B' | grep -n -i -E "$re" | while read -r l; do hit "history: denied pattern /$re/: $l"; done | grep . && fail=1
+		done < .scan-deny
+	fi
 fi
 [ "$fail" = 0 ] && echo "scan: clean"
 exit $fail
