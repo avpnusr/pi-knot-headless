@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
-	isInert, assignDots, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
+	isInert, assignDots, nestedByAgent, parseCost, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
 	newComments, mapComment, composeDelivery, timeoutMessage, type State, type AgentRow, type Severity,
 } from "./core.ts";
 import { loadConfig, type Config } from "./config.ts";
@@ -236,36 +236,60 @@ export function create(pi: any, deps: Deps): Handle {
 	}
 
 	// ---- subagent collection --------------------------------------------------
-	function applyFleet(entries: any[], total: number, omitted: number): void {
+	function applyFleet(entries: any[], total: number, omitted: number, snapshot?: unknown): void {
+		const nestedMap = nestedByAgent(snapshot);
 		const live = new Map<string, AgentRow>();
 		for (const e of entries) {
 			const key = String(e.key ?? e.agent);
-			live.set(key, { key, name: String(e.agent ?? "agent"), model: String(e.model ?? ""), state: "working", task: String(e.goal ?? e.role ?? "") });
+			const name = String(e.agent ?? "agent");
+			const seen = nestedMap.get(name);
+			const prev = st.agents.find((a) => a.key === key);
+			const n = Math.max(seen?.n ?? 0, prev?.nested ?? 0);
+			live.set(key, { key, name, model: String(e.model ?? ""), state: "working", task: String(e.goal ?? e.role ?? ""), ...(n ? { nested: n, nestedTruncated: !!(seen?.truncated || prev?.nestedTruncated) } : {}) });
 		}
 		// a row that left the fleet has finished; if the fleet was truncated we cannot tell, so keep it as it was
 		const carried = st.agents.filter((a) => !live.has(a.key)).map((a) => (a.state === "working" && omitted === 0 ? { ...a, state: "done" as const } : a));
-		st = assignDots({ ...st, agents: [...carried, ...live.values()].slice(-MAX_ROWS), backgroundRunning: total });
+		const all = [...carried, ...live.values()];
+		st = assignDots({ ...st, agents: all.slice(-MAX_ROWS), agentsDropped: (st.agentsDropped ?? 0) + Math.max(0, all.length - MAX_ROWS), backgroundRunning: total });
 	}
 
-	function readFleet(): Promise<void> {
+	// one request/reply round trip to pi-subagents' in-process RPC; resolves undefined on timeout or when pi-subagents is absent
+	function rpc(method: string): Promise<any> {
 		return new Promise((resolve) => {
-			if (!st.pageId || stopped) return resolve();
+			if (stopped) return resolve(undefined);
 			const id = `kh-${deps.now()}-${Math.random().toString(36).slice(2)}`;
 			let done = false;
 			let off: (() => void) | undefined;
 			const finish = (data?: any) => {
 				if (done) return;
 				done = true;
-				try {
-					off?.();
-					const fleet = data?.fleet;
-					if (!stopped && fleet && Array.isArray(fleet.entries)) applyFleet(fleet.entries, Number(fleet.totalActive ?? fleet.entries.length), Number(fleet.omitted ?? 0));
-				} catch (e) { log(e); } finally { resolve(); }
+				try { off?.(); } catch { /* ignore */ }
+				resolve(data);
 			};
 			off = pi.events.on(`subagents:rpc:v1:reply:${id}`, (reply: any) => finish(reply?.success ? reply.data : undefined));
 			deps.setTimeout(() => finish(), RPC_TIMEOUT_MS);
-			pi.events.emit("subagents:rpc:v1:request", { version: 1, requestId: id, method: "status", params: {} });
+			pi.events.emit("subagents:rpc:v1:request", { version: 1, requestId: id, method, params: {} });
 		});
+	}
+
+	async function readFleet(): Promise<void> {
+		if (!st.pageId || stopped) return;
+		const data = await rpc("status");
+		try {
+			const fleet = data?.fleet;
+			if (!stopped && fleet && Array.isArray(fleet.entries)) applyFleet(fleet.entries, Number(fleet.totalActive ?? fleet.entries.length), Number(fleet.omitted ?? 0), data.asyncSnapshot);
+		} catch (e) { log(e); }
+	}
+
+	let costPending = false;
+	// read after a run settles (pi-subagents asks for this timing); the last value is what the ended page shows
+	async function readCost(): Promise<void> {
+		if (!st.pageId || stopped || costPending) return;
+		costPending = true;
+		try {
+			const c = parseCost(await rpc("cost"), deps.now());
+			if (c && !stopped) st = { ...st, cost: c };
+		} catch (e) { log(e); } finally { costPending = false; }
 	}
 	function scheduleFleet() {
 		if (fleetTimer || stopped || !st.pageId) return;
@@ -351,9 +375,9 @@ export function create(pi: any, deps: Deps): Handle {
 			warnedRun = true;
 			st = logDecision(st, { ts: deps.now(), by: "system", text: "⚠ run ended with no logged decisions" });
 		}
-		st = { ...st, mutated: false, decidedThisRun: 0 };
+		st = { ...st, mutated: false, decidedThisRun: 0, runs: (st.runs ?? 0) + (st.pageId ? 1 : 0) };
 		warnedRun = false;
-		void handle.tick();
+		void readCost().then(() => handle.tick());
 	}));
 
 	onEvent("subagent:async-started", guard(() => { void launchTrigger().then(scheduleFleet); }));

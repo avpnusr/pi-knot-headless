@@ -1,4 +1,4 @@
-import { redact, type State, type Question } from "./core.ts";
+import { redact, fmtTokens, type State, type Question } from "./core.ts";
 
 export function esc(text: string, max = 80): string {
 	let t = String(text).replace(/\s+/g, " ").trim();
@@ -50,7 +50,8 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 	else {
 		L.push("| | Agent | Model | State | Task |", "|---|---|---|---|---|");
 		for (const a of s.agents.slice(-MAX_AGENTS)) {
-			L.push(`| ${dot(s, a.name)} | ${e(a.name, 40)} | ${e(a.model, 40)} | ${GLYPH[a.state] ?? "•"} ${a.state} | ${e(a.task)} |`);
+			const nested = a.nested ? ` +${a.nested}${a.nestedTruncated ? "+" : ""} nested` : "";
+			L.push(`| ${dot(s, a.name)} | ${e(a.name, 40)}${nested} | ${e(a.model, 40)} | ${GLYPH[a.state] ?? "•"} ${a.state} | ${e(a.task)} |`);
 		}
 		if (s.agents.length > MAX_AGENTS) L.push("", `_+${s.agents.length - MAX_AGENTS} older not shown_`);
 		L.push("");
@@ -71,6 +72,7 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 		const dur = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
 		const models = [...new Set([s.headModel, ...s.agents.map((a) => a.model)].filter(Boolean))];
 		L.push("## ✅ Summary", "", `- duration: ${dur}`, `- models: ${models.map((m) => code(redact(m, secrets))).join(", ")}`);
+		L.push(...outcomeLines(s));
 		if (s.backgroundRunning > 0) L.push(`- ⚠️ ${s.backgroundRunning} background runs still running; results not delivered`);
 		L.push("");
 	}
@@ -87,5 +89,30 @@ function question(q: Question, e: (t: string, max?: number) => string, hm: (ts: 
 	if (q.options.length) L.push("");
 	if (q.recommended && !q.options.includes(q.recommended)) L.push(`⭐ recommended: ${e(q.recommended, 120)}`, "");
 	if (q.why) L.push(`> why: ${e(q.why, 200)}`, "");
+	return L;
+}
+
+function outcomeLines(s: State): string[] {
+	const L: string[] = [];
+	const c = s.counts ?? { model: 0, user: 0, timeout: 0 };
+	const done = s.agents.filter((a) => a.state === "done").length;
+	const failed = s.agents.filter((a) => a.state === "failed").length;
+	const total = s.agents.length + (s.agentsDropped ?? 0);
+	const nested = s.agents.reduce((n, a) => n + (a.nested ?? 0), 0);
+	const nestedTrunc = s.agents.some((a) => a.nestedTruncated);
+	const parts: string[] = [];
+	if ((s.runs ?? 0) > 0) parts.push(`${s.runs} run${s.runs === 1 ? "" : "s"}`);
+	if (total > 0) parts.push(`${total} subagent${total === 1 ? "" : "s"} (${done} ✅${failed ? `, ${failed} ❌` : ""})`);
+	if (nested > 0) parts.push(`${nested}${nestedTrunc ? "+" : ""} nested`);
+	if (c.model) parts.push(`${c.model} 🤖 decision${c.model === 1 ? "" : "s"}`);
+	if (c.user) parts.push(`${c.user} 👤 answer${c.user === 1 ? "" : "s"}`);
+	if (c.timeout) parts.push(`${c.timeout} ⏱ timed out`);
+	if (parts.length) L.push(`- outcome: ${parts.join(" · ")}`);
+	const k = s.cost;
+	if (k && k.input + k.output + k.cacheRead + k.cacheWrite > 0) {
+		const tin = k.input + k.cacheRead + k.cacheWrite;
+		const usd = k.usd > 0 ? ` · ≈ $${k.usd.toFixed(2)} list price (not your plan bill)` : "";
+		L.push(`- usage: ${k.lowerBound ? "≥ " : ""}${fmtTokens(tin)} tokens in · ${fmtTokens(k.output)} out${usd}`);
+	}
 	return L;
 }

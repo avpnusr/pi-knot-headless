@@ -41,7 +41,7 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 	const h = {
 		tools: new Map<string, any>(), commands: new Map<string, any>(), entries, sent: [] as { text: string; opts: any }[],
 		notes: [] as string[], status: [] as (string | undefined)[], settings, sendThrows: false, throwOnAppend: false,
-		fleet: { entries: [] as any[], totalActive: 0 },
+		fleet: { entries: [] as any[], totalActive: 0 } as any, snapshot: undefined as any, cost: undefined as any,
 		pi: undefined as any,
 		ctx: (over: any = {}) => ({
 			mode: "tui", model: { provider: "claude-bridge", id: "opus" }, cwd: "/work/demo",
@@ -64,7 +64,10 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 		},
 	};
 	// stands in for the pi-subagents extension answering RPC status requests
-	h.pi.events.on("subagents:rpc:v1:request", (req: any) => h.pi.events.emit(`subagents:rpc:v1:reply:${req.requestId}`, { version: 1, requestId: req.requestId, success: true, data: { fleet: h.fleet } }));
+	h.pi.events.on("subagents:rpc:v1:request", (req: any) => {
+		const data = req.method === "cost" ? h.cost : { fleet: h.fleet, asyncSnapshot: h.snapshot };
+		if (data !== undefined) h.pi.events.emit(`subagents:rpc:v1:reply:${req.requestId}`, { version: 1, requestId: req.requestId, success: true, data });
+	});
 	return h;
 }
 

@@ -55,6 +55,17 @@ export interface AgentRow {
 	model: string;
 	state: "working" | "done" | "failed" | "waiting" | "idle" | "paused";
 	task: string;
+	nested?: number; // subagents this one fanned out to (count only)
+	nestedTruncated?: boolean;
+}
+export interface Cost {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	usd: number; // list-price estimate reported by pi-subagents, not a plan bill
+	lowerBound: boolean; // some async children were not accounted yet
+	at: number;
 }
 export interface State {
 	version: 1;
@@ -74,6 +85,10 @@ export interface State {
 	backgroundRunning: number;
 	mutated: boolean;
 	decidedThisRun: number;
+	counts?: { model: number; user: number; timeout: number };
+	runs?: number; // settled runs
+	agentsDropped?: number; // rows pushed out of the capped agents list
+	cost?: Cost;
 	dots?: Record<string, number>; // agent name -> palette index, assigned on first sight so dots stay distinct and stable
 	ownIds: string[]; // ids of comments this extension posted (never delivered back, even if owner == agent account)
 }
@@ -84,11 +99,49 @@ export function newState(now: number, title: string, headModel: string): State {
 	return {
 		version: 1, title, startedAt: now, lastBeat: now, phase: "idle", headModel, headActivity: "",
 		agents: [], questions: [], decisions: [], nextQ: 1, backgroundRunning: 0, mutated: false, decidedThisRun: 0, ownIds: [],
+		counts: { model: 0, user: 0, timeout: 0 }, runs: 0, agentsDropped: 0,
 	};
 }
 
 export function logDecision(s: State, d: Decision): State {
-	return { ...s, decisions: [...s.decisions, d].slice(-MAX_DECISIONS) };
+	const c = s.counts ?? { model: 0, user: 0, timeout: 0 };
+	const counts = d.by === "system" ? c : { ...c, [d.by]: c[d.by] + 1 };
+	return { ...s, counts, decisions: [...s.decisions, d].slice(-MAX_DECISIONS) };
+}
+
+// ---- cost + nested ----------------------------------------------------------
+
+const num = (x: unknown): number => (typeof x === "number" && Number.isFinite(x) ? x : 0);
+
+/** `data` is the reply of pi-subagents' RPC method "cost". */
+export function parseCost(data: any, now: number): Cost | undefined {
+	const t = data?.total;
+	if (!t || typeof t.input !== "number") return undefined;
+	return { input: num(t.input), output: num(t.output), cacheRead: num(t.cacheRead), cacheWrite: num(t.cacheWrite), usd: num(t.cost), lowerBound: num(data.unresolvedAsyncChildren) > 0, at: now };
+}
+
+export function fmtTokens(n: number): string {
+	if (n < 1000) return String(Math.round(n));
+	if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+	return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/** Nested subagent count per top-level agent name, from the `asyncSnapshot` of RPC "status" (nodes with `agent` are steps). */
+export function nestedByAgent(snapshot: any): Map<string, { n: number; truncated: boolean }> {
+	const out = new Map<string, { n: number; truncated: boolean }>();
+	if (!snapshot || !Array.isArray(snapshot.runs)) return out;
+	const truncated = num(snapshot.omitted?.children) > 0;
+	const steps = (node: any): number => (Array.isArray(node?.children) ? node.children.reduce((n: number, c: any) => n + (c?.agent ? 1 : 0) + steps(c), 0) : 0);
+	const topSteps = (node: any) => { // runs -> (nested runs ->) steps; the top-level steps are the first nodes with an agent on each path
+		for (const c of Array.isArray(node?.children) ? node.children : []) {
+			if (c?.agent) {
+				const n = steps(c);
+				if (n > 0) { const prev = out.get(c.agent); out.set(c.agent, { n: Math.max(prev?.n ?? 0, n), truncated }); }
+			} else topSteps(c);
+		}
+	};
+	for (const r of snapshot.runs) topSteps(r);
+	return out;
 }
 
 export function askQuestion(

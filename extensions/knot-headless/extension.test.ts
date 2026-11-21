@@ -454,3 +454,47 @@ test("question comments are defanged (no images, links, mentions) and stay under
 	assert.ok(!/@[a-z]/.test(body));
 	assert.ok(Buffer.byteLength(body) <= 3500);
 });
+
+test("cost is read after a run settles and shown on the ended page; counters feed the outcome line", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "tabs?", recommended: "spaces", severity: "minor" });
+	await h.handle.tick(true);
+	h.cost = { total: { input: 15840, output: 389, cacheRead: 15168, cacheWrite: 0, cost: 0.003 }, unresolvedAsyncChildren: 1 };
+	await h.fire("agent_settled");
+	await h.flush();
+	assert.equal(h.handle.state().cost!.lowerBound, true);
+	assert.equal(h.handle.state().runs, 1);
+	await h.fire("session_shutdown", { reason: "quit" });
+	const last = h.knot.replaces.at(-1)!;
+	assert.match(last, /outcome: 1 run · 1 🤖 decision/);
+	assert.match(last, /usage: ≥ 31k tokens in · 389 out/);
+});
+
+test("without pi-subagents (no RPC reply) the cost stays absent and nothing breaks", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	await h.fire("agent_settled");
+	await h.runTimeouts();
+	assert.equal(h.handle.state().cost, undefined);
+});
+
+test("nested count from the status snapshot lands on the matching row and survives the row finishing", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "x", recommended: "y", severity: "minor" });
+	await h.handle.tick(true);
+	const step = (agent: string, children?: any[]) => ({ id: agent, kind: "step", label: agent, state: "running", agent, ...(children ? { children } : {}) });
+	h.fleet = { entries: [{ key: "k1", agent: "security-reviewer", model: "opus" }], totalActive: 1 };
+	h.snapshot = { omitted: { children: 0 }, runs: [{ id: "r", kind: "run", children: [step("security-reviewer", [{ id: "n", kind: "run", children: [step("a"), step("b"), step("c")] }])] }] };
+	h.pi.events.emit("subagent:jobs-changed", { version: 1 });
+	await h.runTimeouts();
+	assert.equal(h.handle.state().agents[0].nested, 3);
+	h.fleet = { entries: [], totalActive: 0 };
+	h.snapshot = undefined;
+	h.pi.events.emit("subagent:jobs-changed", { version: 1 });
+	await h.runTimeouts();
+	assert.deepEqual([h.handle.state().agents[0].state, h.handle.state().agents[0].nested], ["done", 3]);
+});
