@@ -427,6 +427,13 @@ test("model switch is logged once a page exists; run without logged decisions is
 	await h.fire("agent_settled");
 	assert.match(h.handle.state().decisions.at(-1)!.text, /no logged decisions/);
 	assert.equal(h.handle.state().mutated, false);
+	const n = h.handle.state().decisions.length;
+	for (let i = 0; i < 3; i++) { // more runs that edit without logging: the page is told once, not after every run
+		await h.fire("agent_start");
+		await h.fire("tool_execution_end", { toolName: "bash" });
+		await h.fire("agent_settled");
+	}
+	assert.equal(h.handle.state().decisions.length, n, "warned once per session");
 });
 
 test("a failing appendEntry or handler never propagates into pi", async () => {

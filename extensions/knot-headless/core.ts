@@ -214,12 +214,26 @@ export function looksLikeAsk(text: string): boolean {
 	return /\?$/.test(tail.replace(/[\s*_`"')\]>]+$/, "")) || ASK_PHRASES.test(tail.split(/\n\s*\n/).pop()!);
 }
 
+/** What to quote of an ask: the last paragraph, cut to whole trailing sentences so it never starts mid-sentence; one sentence that alone is too long is cut at a word boundary with an ellipsis. */
+export function askTail(text: string, max = 200): string {
+	const para = (text.trim().split(/\n\s*\n/).pop() ?? "").replace(/\s+/g, " ").trim();
+	if (para.length <= max) return para;
+	let out = "";
+	for (const sentence of para.split(/(?<=[.!?]["')\]]*)\s+/).reverse()) {
+		const c = out ? `${sentence} ${out}` : sentence;
+		if (c.length > max) break;
+		out = c;
+	}
+	if (out) return out;
+	const cut = para.slice(-(max - 1));
+	return `…${cut.slice(cut.indexOf(" ") + 1)}`;
+}
+
 /** The agent asked in the chat instead of via knot_ask: open a critical question from the tail of its message so it reaches Knot. */
 export function mirrorChatAsk(s: State, text: string, now: number): { state: State; qid: string } {
-	const r = askQuestion(s, { question: `Asked in chat: ${text.trim().slice(-180)}`, severity: "critical", why: "copied from the chat by pi-knot-headless; answer here or in the chat" }, now, 0);
+	const r = askQuestion(s, { question: `Asked in chat: ${askTail(text)}`, severity: "critical", why: "copied from the chat by pi-knot-headless; answer here or in the chat" }, now, 0);
 	const qid = r.qid!;
-	const st = logDecision({ ...r.state, questions: r.state.questions.map((q) => (q.id === qid ? { ...q, mirrored: true } : q)) }, { ts: now, by: "system", text: `⚠ agent asked in the chat, mirrored as ${qid}` });
-	return { state: st, qid };
+	return { state: { ...r.state, questions: r.state.questions.map((q) => (q.id === qid ? { ...q, mirrored: true } : q)) }, qid };
 }
 
 export function answerQuestion(s: State, qid: string, answer: string, by: "user" | "timeout", now: number): State {

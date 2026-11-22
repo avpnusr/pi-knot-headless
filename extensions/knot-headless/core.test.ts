@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isInert, redact, secretValuesFromEnv, looksLikeAsk, mirrorChatAsk, newState, pickResolvable, elide } from "./core.ts";
+import { isInert, redact, secretValuesFromEnv, looksLikeAsk, mirrorChatAsk, newState, pickResolvable, elide, askTail } from "./core.ts";
 
 test("isInert: subagent children and non-interactive modes", () => {
 	assert.equal(isInert({ PI_SUBAGENT_CHILD: "1" }, "tui"), true);
@@ -61,8 +61,23 @@ test("mirrorChatAsk: opens a critical, mirrored question built from the tail of 
 	assert.equal(q.deadline, undefined);
 	assert.equal(q.mirrored, true);
 	assert.ok(q.text.endsWith("Should I push the release?"));
-	assert.ok(q.text.length < 220);
-	assert.match(r.state.decisions.at(-1)!.text, /asked in the chat, mirrored as Q1/);
+	assert.ok(q.text.length < 240);
+	assert.equal(r.state.decisions.length, 0, "the question itself is the record; no extra system line on the page");
+});
+
+test("askTail: the last paragraph, whole trailing sentences, never a mid-sentence start", () => {
+	assert.equal(askTail("Tests pass. Docs are updated.\n\nShall I push it?"), "Shall I push it?", "last paragraph only");
+	assert.equal(askTail("  One\nline   with\tspaces?  "), "One line with spaces?");
+	const para = `${"A filler sentence about something else. ".repeat(10)}The release is ready. Shall I push it?`;
+	const t0 = askTail(para);
+	assert.ok(t0.length <= 200 && t0.startsWith("A filler sentence") && t0.endsWith("The release is ready. Shall I push it?"), "as many trailing whole sentences as fit, starting at a sentence boundary");
+	assert.ok(t0.split(". ").every((x) => x.length === 0 || /^[A-Z]/.test(x)), "no sentence is cut");
+	assert.equal(askTail("See https://a.b/c and a.b now. Want me to go on?"), "See https://a.b/c and a.b now. Want me to go on?", "dots inside words and URLs are not sentence ends");
+	const huge = `${"word ".repeat(80)}and finally: should I push?`;
+	const t = askTail(huge);
+	assert.ok(t.startsWith("…") && t.endsWith("should I push?") && t.length <= 201, t);
+	assert.match(t, /^…(word|and|finally:) /, "cut at a word boundary");
+	assert.equal(askTail(""), "");
 });
 
 const cm = (id: string, sec: number, thread = id, parent: string | null = null, resolved: string | null = null) => ({

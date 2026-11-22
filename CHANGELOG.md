@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **Less noise under *Decisions reported*.** The `⚠ run ended with no logged decisions` note now appears once per session instead of after nearly every run (its once-only flag was reset immediately), and a question copied from the chat no longer adds its own `mirrored as Qn` line (the question itself is the record).
+- **Questions copied from the chat quote cleanly.** The quote is the last paragraph cut to whole sentences (a single overlong sentence is cut at a word boundary with an ellipsis), no longer the last 180 characters, which started mid-sentence.
+
 - **A gear (⚙️) marks a running session** instead of ▶: in the page title, the header line, a working subagent and a running orchestrator. The same symbol everywhere; ▶ is a text glyph that some fonts draw plain and tiny.
 
 - Screenshots in the README show the current page design (header state, session id line, last message code block, usage, summary).

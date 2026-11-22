@@ -560,7 +560,6 @@ export function create(pi: any, deps: Deps): Handle {
 			st = logDecision(st, { ts: deps.now(), by: "system", text: "⚠ run ended with no logged decisions" });
 		}
 		st = { ...st, mutated: false, decidedThisRun: 0, runs: (st.runs ?? 0) + (st.pageId ? 1 : 0) };
-		warnedRun = false;
 		// a question asked only in the chat becomes a real one (the message itself is already on the page via message_end)
 		const text = clean(lastText); // redact before any cut, so a token cannot be split into an unrecognisable fragment
 		lastText = "";
