@@ -378,3 +378,16 @@ test("terminal prompt: header and Needs you say pi waits in the terminal; title 
 	const ended = render({ ...base(), phase: "ended", terminalPrompt: tp }, O);
 	assert.ok(!ended.includes("In the terminal") && !ended.includes("waiting on you"));
 });
+
+test("esc: & is escaped so an entity cannot rebuild a defanged URL or mention (Knot decodes entities)", () => {
+	assert.equal(esc("a & b"), "a &amp; b");
+	assert.equal(esc("http&#58;//x and &#64;someone"), "http&amp;\\#58;//x and &amp;\\#64;someone");
+	assert.equal(esc("&amp;"), "&amp;amp;");
+});
+
+test("the delivery warning shows in the header and as a line, only while delivery fails", () => {
+	const out = render({ ...base(), phase: "idle", deliveryFailures: 3 }, O);
+	assert.ok(out.includes("⚠ delivery to the session is failing (3 attempts)"));
+	assert.ok(!render(base(), O).includes("delivery to the session"));
+	assert.ok(!render({ ...base(), phase: "ended", deliveryFailures: 3 }, O).includes("delivery to the session"));
+});

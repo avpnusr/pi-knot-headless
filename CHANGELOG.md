@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- **A send into the session that keeps failing backs off.** When `sendUserMessage` throws (an answer, a comment or a timeout notice), the retry now waits 20 s, 40 s, 80 s ... up to 5 minutes instead of every poll, and each retry no longer writes a fresh state snapshot into the session file. The header shows `⚠ delivery to the session is failing (n attempts)` and pi's status line `knot: delivery failing (n)` until a send works. Comments stay undelivered (and unresolved) meanwhile.
+- **Two sessions in one process no longer clobber each other.** The poll timer is kept per session id (a reload still replaces its own old timer) and pending subagent launches belong to their session. Before, starting a second session stopped the first one's polling.
+- **`&` is escaped on the page** (Knot decodes entities, verified), so an entity such as `&#58;` can no longer rebuild a URL or mention the escaping had defanged.
+- Tests for the 2 s cost-RPC timeout (no reply from pi-subagents, no leaked listener), the backoff (poll and timeout paths), per-session timers and launches.
+
 - **Dialogs waiting in the terminal are on the page.** While a pi dialog (confirm, select, input, editor, custom screen) is open, the header says `waiting on you: the terminal (<title>)` and *Needs you* lists it with its kind and since when; it disappears when the dialog closes (pi's `ui_prompt_start`/`ui_prompt_end` events). It is written to the page at once, creates the page if there is none, and is never restored after a restart. It can only be answered in the pi terminal. The footnote under *Last message from the agent* is updated accordingly.
 
 - **Less noise under *Decisions reported*.** The `⚠ run ended with no logged decisions` note now appears once per session instead of after nearly every run (its once-only flag was reset immediately), and a question copied from the chat no longer adds its own `mirrored as Qn` line (the question itself is the record).

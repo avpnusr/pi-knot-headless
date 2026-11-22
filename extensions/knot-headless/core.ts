@@ -118,6 +118,7 @@ export interface State {
 	agentsDropped?: number; // rows pushed out of the capped agents list
 	cost?: Cost;
 	nestedCost?: NestedCost;
+	deliveryFailures?: number; // consecutive failed sends to the session, shown on the page; never restored after a restart
 	terminalPrompt?: { kind: string; title?: string; at: number }; // a pi dialog is open in the terminal (ui_prompt_start/end); never restored after a restart
 	lastMessage?: { text: string; at: number }; // newest assistant text, redacted and elided; set at message_end in every phase so Knot alone shows what the CLI shows
 	summary?: { text: string; model: string; at: number };

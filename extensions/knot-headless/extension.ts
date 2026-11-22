@@ -36,7 +36,9 @@ const WRITE_GAP_MS = 15_000;
 const HEARTBEAT_MS = 300_000;
 const RPC_TIMEOUT_MS = 2_000;
 const COMMENT_MAX_BYTES = 3_500; // Knot rejects comment bodies over 4096 bytes
-const TIMER_KEY = Symbol.for("pi-knot-headless.timer");
+const TIMERS_KEY = Symbol.for("pi-knot-headless.timers"); // process-wide: session id -> poll timer, so a reload clears its own old timer but never another session's
+const timers = (): Map<string, unknown> => ((globalThis as any)[TIMERS_KEY] ??= new Map());
+const RETRY_MAX_MS = 300_000;
 const MAX_ROWS = 30;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SELF_OWNER_WARNING = "pi-knot-headless: ownerUid is the agent's own Knot account, so anyone holding that token (the agent's shell, subagents) can answer as you. Use a separate bot token for the agent.";
@@ -77,7 +79,6 @@ const cutBytes = (s: string, max: number) => {
 	return b.subarray(0, n).toString();
 };
 const isLaunch = (a: any) => !!(a && (a.agent || a.tasks || a.chain || a.workflow || a.task)); // not status/list/management calls
-let launches: Launch[] = [];
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function create(pi: any, deps: Deps): Handle {
@@ -98,6 +99,9 @@ export function create(pi: any, deps: Deps): Handle {
 	const notified = new Set<string>();
 	let firstPrompt = "";
 	let warnedRun = false;
+	let launches: Launch[] = []; // this session's pending subagent launches (task texts)
+	let timerKey = "default";
+	let deliverFails = 0, nextDeliverAt = 0; // backoff of sends into the session
 	let lastCreateTry = 0;
 	let lastText = ""; // last assistant text of the current run
 	let fleetTimer: unknown;
@@ -178,9 +182,18 @@ export function create(pi: any, deps: Deps): Handle {
 		if (!text) return true;
 		try {
 			await Promise.resolve(pi.sendUserMessage(text, { deliverAs: "steer" }));
+			if (deliverFails) {
+				deliverFails = 0; nextDeliverAt = 0;
+				st = { ...st, deliveryFailures: undefined };
+				if (!offline && !disabled) setStatus(undefined);
+			}
 			return true;
 		} catch (e) {
 			log(e);
+			deliverFails++;
+			nextDeliverAt = deps.now() + Math.min(POLL_MS * 2 ** (deliverFails - 1), RETRY_MAX_MS); // 20 s, 40 s, ... 5 min: a send that keeps failing must not be retried (and snapshotted) every poll
+			st = { ...st, deliveryFailures: deliverFails };
+			setStatus(`knot: delivery failing (${deliverFails})`);
 			return false;
 		}
 	}
@@ -192,6 +205,7 @@ export function create(pi: any, deps: Deps): Handle {
 		if (stopped || st.phase === "ended") return;
 		const fresh = newComments(all, st.watermark);
 		if (fresh.length === 0) return all;
+		if (deps.now() < nextDeliverAt) return all; // the last send failed: wait for the backoff, comments stay undelivered (and unresolved)
 		const prev = st;
 		const last = fresh.at(-1)!;
 		let run: State = { ...st, watermark: { id: last.id, createdAt: last.created_at } };
@@ -208,7 +222,7 @@ export function create(pi: any, deps: Deps): Handle {
 		if (items.length === 0) return all; // only foreign/own comments: advance in memory, no need to grow the session file
 		persist();
 		if (!(await deliver(composeDelivery(items)))) {
-			st = prev;
+			st = { ...prev, deliveryFailures: st.deliveryFailures };
 			persist();
 		}
 		return all;
@@ -233,7 +247,7 @@ export function create(pi: any, deps: Deps): Handle {
 		if (!cfg || stopped) return;
 		const now = deps.now();
 		const r = expireQuestions(st, now);
-		if (r.expired.length === 0) return;
+		if (r.expired.length === 0 || deps.now() < nextDeliverAt) return;
 		const text = r.expired.map((q) => timeoutMessage(q, cfg!.askTimeoutMinutes)).join("\n\n");
 		// commit only after delivery; on failure the questions stay open and expire again next tick
 		if (await deliver(text)) {
@@ -442,11 +456,12 @@ export function create(pi: any, deps: Deps): Handle {
 		launches = [];
 		routes.clear();
 		wfDirs.clear();
-		lastCreateTry = 0;
+		lastCreateTry = 0; deliverFails = 0; nextDeliverAt = 0;
 		ctxRef = ctx;
 		stopped = false;
 		gen++;
-		const prev = (globalThis as any)[TIMER_KEY];
+		timerKey = ctx.sessionManager?.getSessionId?.() ?? "default";
+		const prev = timers().get(timerKey);
 		if (prev) deps.clearInterval(prev);
 		inertMode = isInert(deps.env, ctx.mode);
 		const r = loadConfig(deps.settings(), deps.env);
@@ -463,7 +478,7 @@ export function create(pi: any, deps: Deps): Handle {
 			if (saved?.data?.version === 1) {
 				const d = saved.data;
 				const counts = d.counts ?? (d.decisions ?? []).reduce((c: any, x: any) => (x.by === "system" ? c : { ...c, [x.by]: (c[x.by] ?? 0) + 1 }), { model: 0, user: 0, timeout: 0 });
-				st = { ...d, counts, phase: "idle", terminalPrompt: undefined, agents: [], orchestrators: [], agentsDropped: (d.agentsDropped ?? 0) + (d.agents?.length ?? 0), headModel: head || d.headModel, backgroundRunning: 0, mutated: false, decidedThisRun: 0 };
+				st = { ...d, counts, phase: "idle", terminalPrompt: undefined, deliveryFailures: undefined, agents: [], orchestrators: [], agentsDropped: (d.agentsDropped ?? 0) + (d.agents?.length ?? 0), headModel: head || d.headModel, backgroundRunning: 0, mutated: false, decidedThisRun: 0 };
 				if (newest?.data?.version === 1 && newest.data.pageId === st.pageId && newest.data.watermark) st = { ...st, watermark: newest.data.watermark, ownIds: newest.data.ownIds ?? [] };
 				if (st.pageId !== undefined && !UUID.test(st.pageId)) {
 					st = { ...st, pageId: undefined, pageCreator: undefined, selfOwned: undefined, watermark: undefined, ownIds: [], questions: st.questions.map((q) => ({ ...q, threadId: undefined })) };
@@ -482,12 +497,12 @@ export function create(pi: any, deps: Deps): Handle {
 		}
 		registerAskTool();
 		timer = deps.setInterval(() => { void handle.tick(); }, POLL_MS);
-		(globalThis as any)[TIMER_KEY] = timer;
+		timers().set(timerKey, timer);
 		if (st.pageId) { scheduleFleet(); void handle.tick(true); }
 	}));
 
 	pi.on("session_shutdown", guard(async (event: any) => {
-		if (timer) { deps.clearInterval(timer); if ((globalThis as any)[TIMER_KEY] === timer) (globalThis as any)[TIMER_KEY] = undefined; timer = undefined; }
+		if (timer) { deps.clearInterval(timer); if (timers().get(timerKey) === timer) timers().delete(timerKey); timer = undefined; }
 		const finalWrite = active() && !!st.pageId && event?.reason !== "reload";
 		if (finalWrite) {
 			st = { ...st, phase: "ended", lastBeat: deps.now() };

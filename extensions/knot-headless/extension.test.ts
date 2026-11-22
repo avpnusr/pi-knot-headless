@@ -104,7 +104,7 @@ test("thread reply by the owner is delivered once with deliverAs steer; question
 	assert.equal(h.sent.length, 1);
 });
 
-test("a send that throws is retried on the next tick (watermark rolled back)", async () => {
+test("a send that throws is retried after the backoff (watermark rolled back)", async () => {
 	const h = harness();
 	await h.start();
 	await h.ask(critical);
@@ -114,6 +114,7 @@ test("a send that throws is retried on the next tick (watermark rolled back)", a
 	assert.equal(h.sent.length, 0);
 	assert.equal(h.handle.state().questions.length, 1);
 	h.sendThrows = false;
+	h.clock.t += 20_000; // first backoff step
 	await h.handle.tick(true);
 	assert.equal(h.sent.length, 1);
 });
@@ -471,7 +472,7 @@ test("the timer is registered once per session_start and uses the 20 s poll", as
 	await h.start();
 	await h.start("reload");
 	assert.equal(h.intervals.length, 2);
-	assert.equal(((globalThis as any)[Symbol.for("pi-knot-headless.timer")]), h.intervals[1]);
+	assert.equal((globalThis as any)[Symbol.for("pi-knot-headless.timers")].get(SESSION_ID), h.intervals[1]);
 });
 
 test("normal questions still time out while Knot is down, after an auth failure and after /knot off", async () => {
@@ -1225,8 +1226,9 @@ test("cleanup: a delivery that failed and rolled back resolves nothing, the retr
 	await h.handle.tick(true);
 	assert.deepEqual(h.knot.resolved, [], "the session never got these comments");
 	h.sendThrows = false;
+	h.clock.t += 20_000;
 	await h.handle.tick(true);
-	assert.deepEqual(h.knot.resolved, ["c1", "c2", "c3"]);
+	assert.deepEqual(h.knot.resolved.slice(0, 3), ["c1", "c2", "c3"], "after the retry delivered, oldest first (a second poll may add more)");
 });
 
 test("cleanup: not on a self-owned page and not after the session ended", async () => {
@@ -1439,4 +1441,103 @@ test("a terminal prompt creates the page when there is none; inactive modes make
 	await p.fire("ui_prompt_start", { reason: "ui_prompt", kind: "confirm", title: "x" });
 	await p.flush();
 	assert.equal(p.knot.calls, 0);
+});
+
+// ---- delivery backoff, RPC timeout, per-session timers and launches ----
+const sess = (id: string) => ({ sessionManager: { getBranch: () => [], getEntries: () => [], getSessionName: () => undefined, getSessionId: () => id } });
+
+test("a failing send is retried with a growing delay (20 s .. 5 min), shown on the page and in the status, and recovers", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask(minorAsk);
+	await h.handle.tick(true);
+	h.knot.comment("do the thing");
+	h.sendThrows = true;
+	await h.handle.tick(true);
+	assert.equal(h.sendAttempts, 1);
+	const saved = h.entries.length;
+	await h.handle.tick(true); // same instant: backing off, no new attempt, no state snapshot
+	assert.equal(h.sendAttempts, 1);
+	assert.equal(h.entries.length, saved, "no snapshot per skipped poll");
+	assert.ok(h.status.includes("knot: delivery failing (1)"));
+	assert.ok(h.knot.replaces.at(-1)!.includes("delivery to the session is failing"));
+	let attempts = 1;
+	for (const wait of [20, 40, 80, 160, 300, 300]) { // after failure n: 20 s * 2^(n-1), capped at 300 s
+		h.clock.t += wait * 1000 - 1;
+		await h.handle.tick(true);
+		assert.equal(h.sendAttempts, attempts, `no retry 1 ms before ${wait} s`);
+		h.clock.t += 1;
+		await h.handle.tick(true);
+		assert.equal(h.sendAttempts, ++attempts, `retry after ${wait} s`);
+	}
+	h.sendThrows = false;
+	h.clock.t += 300_000;
+	await h.handle.tick(true);
+	assert.equal(h.sent.length, 1, "delivered once it works");
+	assert.equal(h.handle.state().deliveryFailures, undefined);
+	assert.ok(!h.knot.replaces.at(-1)!.includes("delivery to the session is failing"));
+	assert.equal(h.status.at(-1), undefined, "status cleared");
+});
+
+test("a timeout notice that cannot be sent backs off as well and goes out once sending works", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask({ question: "tabs?", options: ["a", "b"], recommended: "a", severity: "normal" });
+	await h.handle.tick(true);
+	h.sendThrows = true;
+	h.clock.t += 121 * 60_000;
+	await h.handle.tick(true);
+	assert.equal(h.sendAttempts, 1);
+	await h.handle.tick(true);
+	assert.equal(h.sendAttempts, 1, "backing off");
+	h.clock.t += 20_000;
+	await h.handle.tick(true);
+	assert.equal(h.sendAttempts, 2);
+	h.sendThrows = false;
+	h.clock.t += 40_000;
+	await h.handle.tick(true);
+	assert.equal(h.sent.length, 1);
+	assert.equal(h.handle.state().questions.length, 0);
+});
+
+test("pi-subagents never answering the cost request: the 2 s timeout ends the wait and no listener leaks", async () => {
+	const h = harness();
+	h.rpcSilent = true;
+	const costIds: string[] = [];
+	h.pi.events.on("subagents:rpc:v1:request", (r: any) => { if (r.method === "cost") costIds.push(r.requestId); });
+	await h.start();
+	await h.ask(minorAsk);
+	await h.handle.tick(true);
+	await h.fire("agent_settled", { aborted: false });
+	await h.flush();
+	assert.equal(costIds.length, 1);
+	const reply = `subagents:rpc:v1:reply:${costIds[0]}`;
+	assert.equal(h.listenerCount(reply), 1, "waiting for the reply");
+	await h.runTimeouts();
+	assert.equal(h.listenerCount(reply), 0, "listener removed by the timeout");
+	assert.equal(h.handle.state().cost, undefined);
+});
+
+test("two sessions in one process keep their own poll timers; the same session after a reload replaces its old one", async () => {
+	const a = harness(), b = harness();
+	await a.start("startup", a.ctx(sess("sess-a")));
+	await b.start("startup", b.ctx(sess("sess-b")));
+	assert.deepEqual(a.cleared, []);
+	assert.deepEqual(b.cleared, [], "another session's start must not stop this session's timer");
+	const a2 = harness();
+	await a2.start("reload", a2.ctx(sess("sess-a")));
+	assert.deepEqual(a2.cleared, [a.intervals.at(-1)], "a reload of the same session clears its own old timer");
+});
+
+test("pending subagent launches belong to their own session", async () => {
+	const a = harness(), b = harness();
+	await a.start();
+	await a.ask(minorAsk);
+	await a.handle.tick(true);
+	const startedAt = a.clock.t;
+	await a.fire("tool_execution_start", { toolName: "subagent", toolCallId: "t1", args: { agent: "explorer", task: "find the parser" } });
+	await b.start("startup", b.ctx(sess("sess-other"))); // a second session starts in the same process
+	a.fleet = { entries: [{ key: "d1", agent: "explorer", model: "m", startedAt }], totalActive: 1 };
+	await a.runTimeouts();
+	assert.deepEqual(a.handle.state().agents.map((x) => [x.name, x.task]), [["explorer", "find the parser"]]);
 });

@@ -65,10 +65,11 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 	const listeners = new Map<string, Array<(p: any) => void>>();
 	const h = {
 		tools: new Map<string, any>(), commands: new Map<string, any>(), entries, sent: [] as { text: string; opts: any }[],
-		notes: [] as string[], status: [] as (string | undefined)[], settings, sendThrows: false, throwOnAppend: false,
+		notes: [] as string[], status: [] as (string | undefined)[], settings, sendThrows: false, sendAttempts: 0, rpcSilent: false, throwOnAppend: false,
 		fleet: { entries: [] as any[], totalActive: 0 } as any, snapshot: undefined as any, cost: undefined as any,
 		llm: { calls: [] as any[], text: "Two agents are fixing the build.", usage: { totalTokens: 100, cost: { total: 0.001 } }, throws: undefined as Error | undefined, models: [] as string[] },
 		pi: undefined as any,
+		listenerCount: (prefix: string) => [...listeners.entries()].filter(([k, v]) => k.startsWith(prefix) && v.length > 0).length,
 		ctx: (over: any = {}) => ({
 			mode: "tui", model: { provider: "claude-bridge", id: "opus" }, cwd: "/work/demo",
 			sessionManager: { getBranch: () => entries, getSessionName: () => undefined, getSessionId: () => SESSION_ID },
@@ -90,7 +91,7 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 		registerTool: (t: any) => h.tools.set(t.name, t),
 		registerCommand: (n: string, c: any) => h.commands.set(n, c),
 		appendEntry: (type: string, data: any) => { if (h.throwOnAppend) throw new Error("disk full"); entries.push({ type: "custom", customType: type, data: structuredClone(data) }); },
-		sendUserMessage: (text: string, opts: any) => { if (h.sendThrows) throw new Error("rejected"); h.sent.push({ text, opts }); },
+		sendUserMessage: (text: string, opts: any) => { h.sendAttempts++; if (h.sendThrows) throw new Error("rejected"); h.sent.push({ text, opts }); },
 		getSettings: () => h.settings,
 		events: {
 			on: (ev: string, fn: any) => { (listeners.get(ev) ?? listeners.set(ev, []).get(ev)!).push(fn); return () => { listeners.set(ev, (listeners.get(ev) ?? []).filter((x) => x !== fn)); }; },
@@ -99,6 +100,7 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 	};
 	// stands in for the pi-subagents extension answering RPC status requests
 	h.pi.events.on("subagents:rpc:v1:request", (req: any) => {
+		if (h.rpcSilent) return; // pi-subagents missing or stuck: no reply at all
 		const data = req.method === "cost" ? h.cost : { fleet: h.fleet, asyncSnapshot: h.snapshot };
 		if (data !== undefined) h.pi.events.emit(`subagents:rpc:v1:reply:${req.requestId}`, { version: 1, requestId: req.requestId, success: true, data });
 		else if (req.method === "cost") h.pi.events.emit(`subagents:rpc:v1:reply:${req.requestId}`, { version: 1, requestId: req.requestId, success: false, error: { code: "execution_failed", message: "no usage" } });
@@ -113,15 +115,16 @@ export function harness(o: { settings?: any; env?: Record<string, string>; entri
 	const clock = { t: Date.UTC(2026, 10, 21, 10, 0) };
 	const timeouts: Array<() => void> = [];
 	const intervals: unknown[] = [];
+	const cleared: unknown[] = [];
 	const deps: Deps = {
 		now: () => clock.t, env: { KNOT_TOKEN: "tok-123456789", ...(o.env ?? {}) }, settings: () => settings["pi-knot-headless"],
-		makeKnot: () => knot, setInterval: (fn) => { intervals.push(fn); return fn; }, clearInterval: () => {},
+		makeKnot: () => knot, setInterval: (fn) => { intervals.push(fn); return fn; }, clearInterval: (t) => { cleared.push(t); },
 		setTimeout: (fn) => { timeouts.push(fn); return fn; }, sleep: () => new Promise(() => {}), log: () => {}, paramsSchema: {}, tz: "UTC",
 	};
 	const handle: Handle = create(h.pi, deps);
 	const flush = () => new Promise<void>((r) => setImmediate(r));
 	return Object.assign(h, {
-		knot, clock, handle, intervals, deps, flush,
+		knot, clock, handle, intervals, cleared, deps, flush,
 		runTimeouts: async () => { const t = timeouts.splice(0); t.forEach((f) => f()); await flush(); await handle.tick(); },
 		start: async (reason = "startup", ctx?: any) => h.fire("session_start", { reason }, ctx),
 		ask: (p: any, ctx?: any) => h.tools.get("knot_ask").execute("id", p, undefined, undefined, ctx ?? h.ctx()),
