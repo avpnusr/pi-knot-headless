@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
 	isInert, assignDots, nestedByAgent, parseCost, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
-	newComments, mapComment, composeDelivery, timeoutMessage, type State, type AgentRow, type Severity,
+	newComments, mapComment, composeDelivery, timeoutMessage, looksLikeAsk, mirrorChatAsk, type State, type AgentRow, type Severity,
 } from "./core.ts";
 import { openAsyncDir, readStepTexts } from "./steptexts.ts";
 import { openRoute, pollRoute, routeCounts, nestedUsage, type Route } from "./nestedroute.ts";
@@ -98,6 +98,7 @@ export function create(pi: any, deps: Deps): Handle {
 	const notified = new Set<string>();
 	let firstPrompt = "";
 	let warnedRun = false;
+	let lastText = ""; // last assistant text of the current run
 	let fleetTimer: unknown;
 	const wfDirs = new Map<string, { dir: string; done: boolean; texts: Map<string, string> }>(); // workflow id -> async dir + latest step texts
 	const routes = new Map<string, Route>(); // async id -> nested route (in memory only, holds a capability token)
@@ -490,7 +491,18 @@ export function create(pi: any, deps: Deps): Handle {
 		if (st.pageId) st = logDecision(st, { ts: deps.now(), by: "system", text: `model switched to ${id}; page keeps writing with the ${st.tokenProvider ?? "?"} token` });
 	}));
 
-	pi.on("agent_start", guard(() => { st = { ...st, phase: "running", headActivity: "working" }; })); // fires on retries too, so counters are reset in agent_settled
+	pi.on("message_end", guard((event: any) => {
+		const m = event?.message;
+		if (m?.role !== "assistant") return;
+		const t = (Array.isArray(m.content) ? m.content : []).filter((c: any) => c?.type === "text").map((c: any) => String(c.text)).join("\n").trim();
+		if (t) lastText = t;
+	}));
+
+	pi.on("agent_start", guard(() => {
+		lastText = "";
+		// the user continued in the chat: a copied-from-chat question is obsolete, and the last message is no longer the last word
+		st = { ...st, phase: "running", headActivity: "working", lastMessage: undefined, questions: st.questions.filter((q) => !q.mirrored) };
+	})); // fires on retries too, so counters are reset in agent_settled
 
 	pi.on("tool_execution_start", guard((event: any) => {
 		st = { ...st, headActivity: `running ${event.toolName}` };
@@ -509,7 +521,7 @@ export function create(pi: any, deps: Deps): Handle {
 		}
 	}));
 
-	pi.on("agent_settled", guard(() => {
+	pi.on("agent_settled", guard((event: any) => {
 		st = { ...st, phase: st.backgroundRunning > 0 ? "running" : "idle", headActivity: "" };
 		if (st.pageId && st.mutated && st.decidedThisRun === 0 && !warnedRun) {
 			warnedRun = true;
@@ -517,6 +529,18 @@ export function create(pi: any, deps: Deps): Handle {
 		}
 		st = { ...st, mutated: false, decidedThisRun: 0, runs: (st.runs ?? 0) + (st.pageId ? 1 : 0) };
 		warnedRun = false;
+		// whatever the agent said last must be visible on the page; a question asked only in the chat becomes a real one
+		const text = lastText;
+		lastText = "";
+		if (active() && text && !event?.aborted && st.questions.length === 0) {
+			const asks = looksLikeAsk(text) && !st.selfOwned;
+			if (asks || st.pageId) {
+				st = { ...st, lastMessage: { text: text.slice(-2000), at: deps.now() } };
+				if (asks) st = mirrorChatAsk(st, text, deps.now()).state;
+				persist();
+				void launchTrigger().then(() => handle.tick(true)).catch(log);
+			}
+		}
 		void readCost().then(() => handle.tick()).catch(log);
 		void summarize().then(() => handle.tick()).catch(log); // independent of the cost read: pi-subagents may be absent
 	}));

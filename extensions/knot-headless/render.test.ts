@@ -12,7 +12,9 @@ test("render is deterministic and has all section headings", () => {
 	const a = render(s, O);
 	assert.equal(a, render(s, O));
 	for (const h of ["## 🧠 Head", "## ❓ Needs you", "## 🤖 Agents", "## 📝 Decisions reported", "## 💬 How to answer"]) assert.ok(a.includes(h), h);
-	assert.ok(a.includes("nothing needs you 🎉"));
+	assert.ok(a.includes("no open question as of 14:02"));
+	assert.ok(a.includes("an older heartbeat means this page is stale"));
+	assert.ok(!a.includes("nothing needs you"));
 	assert.ok(a.startsWith("# 💤 demo"));
 });
 
@@ -319,4 +321,27 @@ test("defang: runs of slashes, reference definitions and underscore-prefixed www
 	assert.ok(!defang("[r]: http:evil.example\n[r]: &#47;&#47;evil.example").includes("]:"));
 	assert.ok(!defang("_www.evil.example").includes("www."));
 	assert.ok(!esc("_www.evil.example").includes("www."));
+});
+
+test("banner states: waiting on questions, idle without one, running with one", () => {
+	const idle = render(base(), O);
+	assert.ok(idle.includes("> 💤 idle — no open question"));
+	let s = askQuestion(base(), { question: "Push?", severity: "critical" }, O.now, 1).state;
+	const waiting = render({ ...s, phase: "idle" }, O);
+	assert.ok(waiting.includes("> ⏳ waiting on you: Q1"));
+	assert.ok(!waiting.includes("no open question as of"));
+	assert.ok(render({ ...s, phase: "running" }, O).includes("> ▶ running · ⏳ waiting on you: Q1"));
+	assert.ok(render({ ...base(), phase: "ended" }, O).includes("session ended, nothing open"));
+});
+
+test("last agent message shows only while idle, tail-cut, redacted and escaped", () => {
+	const lm = { text: `${"a".repeat(800)} # head | key sk-abcdefghijklmnop1234 done`, at: 1 };
+	const out = render({ ...base(), lastMessage: lm }, O);
+	assert.ok(out.includes("## 💬 Last agent message"));
+	assert.ok(out.includes("…"));
+	assert.ok(out.includes("done"));
+	assert.ok(out.includes("redacted") && !out.includes("sk-abcdefghijklmnop"));
+	assert.ok(!/^\s*# head/m.test(out));
+	assert.ok(!render({ ...base(), phase: "running", lastMessage: lm }, O).includes("Last agent message"));
+	assert.ok(!render(base(), O).includes("Last agent message"));
 });

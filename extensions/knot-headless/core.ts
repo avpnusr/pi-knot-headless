@@ -47,6 +47,7 @@ export interface Question {
 	askedAt: number;
 	deadline?: number;
 	threadId?: string;
+	mirrored?: boolean; // the agent asked in the chat and the extension copied it here; dropped when the user continues in the chat
 }
 export interface Decision {
 	ts: number;
@@ -116,6 +117,7 @@ export interface State {
 	agentsDropped?: number; // rows pushed out of the capped agents list
 	cost?: Cost;
 	nestedCost?: NestedCost;
+	lastMessage?: { text: string; at: number }; // last assistant text of the settled run, shown while idle so "no question" is checkable
 	summary?: { text: string; model: string; at: number };
 	summaryFp?: string;
 	sum?: { calls: number; tokens: number; usd: number; attempts?: number }; // our own accounting of summarizer calls
@@ -198,6 +200,22 @@ export function askQuestion(
 		deadline: a.severity === "normal" ? now + timeoutMs : undefined,
 	};
 	return { state: { ...s, questions: [...s.questions, q], nextQ: s.nextQ + 1, decidedThisRun: s.decidedThisRun + 1 }, qid: q.id };
+}
+
+// shortcut: keyword heuristic on the last paragraph; a miss still shows the message as "Last agent message", a false hit only opens a question the next chat message clears. Upgrade: let the summarizer model classify.
+const ASK_PHRASES = /\b(shall i|should i|want me to|do you want|would you like|let me know|confirm|approve|go-ahead|go ahead|your call|which (one|option|do you)|awaiting|waiting for (you|your))\b/i;
+export function looksLikeAsk(text: string): boolean {
+	const tail = text.trim().slice(-600);
+	if (!tail) return false;
+	return /\?$/.test(tail.replace(/[\s*_`"')\]>]+$/, "")) || ASK_PHRASES.test(tail.split(/\n\s*\n/).pop()!);
+}
+
+/** The agent asked in the chat instead of via knot_ask: open a critical question from the tail of its message so it reaches Knot. */
+export function mirrorChatAsk(s: State, text: string, now: number): { state: State; qid: string } {
+	const r = askQuestion(s, { question: `Asked in chat: ${text.trim().slice(-180)}`, severity: "critical", why: "copied from the chat by pi-knot-headless; answer here or in the chat" }, now, 0);
+	const qid = r.qid!;
+	const st = logDecision({ ...r.state, questions: r.state.questions.map((q) => (q.id === qid ? { ...q, mirrored: true } : q)) }, { ts: now, by: "system", text: `⚠ agent asked in the chat, mirrored as ${qid}` });
+	return { state: st, qid };
 }
 
 export function answerQuestion(s: State, qid: string, answer: string, by: "user" | "timeout", now: number): State {

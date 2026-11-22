@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isInert, redact, secretValuesFromEnv } from "./core.ts";
+import { isInert, redact, secretValuesFromEnv, looksLikeAsk, mirrorChatAsk, newState } from "./core.ts";
 
 test("isInert: subagent children and non-interactive modes", () => {
 	assert.equal(isInert({ PI_SUBAGENT_CHILD: "1" }, "tui"), true);
@@ -44,4 +44,23 @@ test("redact: normal text untouched; secret chars are not a regex", () => {
 test("secretValuesFromEnv: only named vars, values >= 8 chars", () => {
 	const env = { A_TOKEN: "12345678", B_TOKEN: "1234567", C: "longenoughvalue", EMPTY: "" };
 	assert.deepEqual(secretValuesFromEnv(env, ["A_TOKEN", "B_TOKEN", "EMPTY", "MISSING"]), ["12345678"]);
+});
+
+test("looksLikeAsk: questions and gates in the last paragraph, not plain reports", () => {
+	for (const t of ["Shall I push it?", "Done.\n\nTell me if you want me to push it.", "Which one do you prefer? **A** or B?**", "Please confirm before I continue.", "I need your go-ahead to delete the branch."]) assert.equal(looksLikeAsk(t), true, t);
+	for (const t of ["", "   ", "All 200 tests pass.", "Is it done? Yes.\n\nThe release is committed.", "Fixed the bug in core.ts."]) assert.equal(looksLikeAsk(t), false, t);
+});
+
+test("mirrorChatAsk: opens a critical, mirrored question built from the tail of the message and logs it", () => {
+	const s = newState(1, "t", "m");
+	const long = `${"x".repeat(500)} Should I push the release?`;
+	const r = mirrorChatAsk(s, long, 5);
+	assert.equal(r.qid, "Q1");
+	const q = r.state.questions[0];
+	assert.equal(q.severity, "critical");
+	assert.equal(q.deadline, undefined);
+	assert.equal(q.mirrored, true);
+	assert.ok(q.text.endsWith("Should I push the release?"));
+	assert.ok(q.text.length < 220);
+	assert.match(r.state.decisions.at(-1)!.text, /asked in the chat, mirrored as Q1/);
 });

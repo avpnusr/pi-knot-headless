@@ -1102,3 +1102,65 @@ test("an oversized/malformed comment list does not stop dashboard writes or mark
 	assert.ok(h.knot.replaces.length > writes);
 	assert.notEqual(h.status.at(-1), "knot: offline");
 });
+
+const say = (h: any, text: string) => h.fire("message_end", { message: { role: "assistant", content: [{ type: "text", text }, { type: "toolCall", name: "x" }] } });
+
+test("a run that ends asking in the chat is mirrored to Knot as an answerable question (even without a page yet)", async () => {
+	const h = harness();
+	await h.start();
+	await h.fire("agent_start");
+	await say(h, "Tests pass.");
+	await say(h, "Tell me if you want me to push it.");
+	await h.fire("agent_settled", { aborted: false });
+	await h.flush(); await h.flush();
+	const st = h.handle.state();
+	assert.equal(st.questions.length, 1);
+	assert.equal(st.questions[0].mirrored, true);
+	assert.ok(h.knot.comments.some((c) => c.body.includes("Q1") && c.body.includes("want me to push it")));
+	assert.ok(h.knot.replaces.at(-1)!.includes("waiting on you: Q1"));
+	// the owner answers in the thread: delivered like any answer
+	h.knot.reply(h.knot.comments[0].thread_id!, "yes");
+	await h.handle.tick(true);
+	assert.match(h.sent.at(-1)!.text, /Knot answer to Q1.*the user answered: "yes"/);
+	assert.equal(h.handle.state().questions.length, 0);
+});
+
+test("a mirrored question disappears when the user continues in the chat; a plain report only shows as last message", async () => {
+	const h = harness();
+	await h.start();
+	await h.fire("agent_start");
+	await say(h, "Shall I push?");
+	await h.fire("agent_settled", { aborted: false });
+	await h.flush(); await h.flush();
+	assert.equal(h.handle.state().questions.length, 1);
+	await h.fire("agent_start"); // the user answered in the chat
+	assert.equal(h.handle.state().questions.length, 0);
+	assert.equal(h.handle.state().lastMessage, undefined);
+	await say(h, "Pushed. All done.");
+	await h.fire("agent_settled", { aborted: false });
+	await h.flush(); await h.flush();
+	const st = h.handle.state();
+	assert.equal(st.questions.length, 0);
+	assert.equal(st.lastMessage?.text, "Pushed. All done.");
+	assert.ok(h.knot.replaces.at(-1)!.includes("Last agent message"));
+});
+
+test("no mirroring when aborted, when a knot_ask is already open, or when there is no page and nothing was asked", async () => {
+	const h = harness();
+	await h.start();
+	await h.fire("agent_start");
+	await say(h, "Shall I push?");
+	await h.fire("agent_settled", { aborted: true });
+	assert.equal(h.handle.state().questions.length, 0);
+	await h.fire("agent_start");
+	await say(h, "Report only.");
+	await h.fire("agent_settled", { aborted: false });
+	await h.flush();
+	assert.equal(h.knot.created.length, 0);
+	await h.ask(critical);
+	await h.fire("agent_start");
+	await say(h, "Should I? (the real question is Q1)");
+	await h.fire("agent_settled", { aborted: false });
+	assert.equal(h.handle.state().questions.length, 1);
+	assert.equal(h.handle.state().questions[0].mirrored, undefined);
+});

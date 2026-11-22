@@ -44,8 +44,9 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 	const e = (t: string, max = 80) => esc(redact(t, secrets), max);
 	const hm = (ts: number) =>
 		new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: o.tz }).format(ts);
-	const icon = s.phase === "running" ? "▶" : s.phase === "idle" ? "💤" : "✅";
-	const label = s.phase === "running" ? "▶ running" : s.phase === "idle" ? "💤 idle — comment to give a new task" : "✅ ended";
+	const waiting = s.questions.length ? `⏳ waiting on you: ${s.questions.map((q) => q.id).join(", ")}` : "";
+	const icon = s.phase === "ended" ? "✅" : s.phase === "running" ? "▶" : waiting ? "⏳" : "💤";
+	const label = s.phase === "running" ? `▶ running${waiting ? ` · ${waiting}` : ""}` : s.phase === "idle" ? waiting || "💤 idle — no open question; comment to give a new task" : "✅ ended";
 	const L: string[] = [];
 
 	L.push(`# ${icon} ${e(s.title, 100)}`, "");
@@ -54,9 +55,14 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 	L.push("## 🧠 Head", "", `${code(redact(s.headModel, secrets))}${s.headActivity ? ` — ${e(s.headActivity)}` : ""}`, "");
 
 	L.push("## ❓ Needs you", "");
-	if (s.questions.length === 0) L.push("_nothing needs you 🎉_", "");
+	if (s.questions.length === 0) L.push(s.phase === "ended" ? "_session ended, nothing open_" : `_no open question as of ${hm(s.lastBeat)}. The page refreshes at least every 5 minutes: an older heartbeat means this page is stale and its silence means nothing._`, "");
 	for (const q of s.questions.slice(0, MAX_QUESTIONS)) L.push(...question(q, e, hm));
 	if (s.questions.length > MAX_QUESTIONS) L.push(`_+${s.questions.length - MAX_QUESTIONS} more questions_`, "");
+
+	if (s.phase === "idle" && s.lastMessage) {
+		const t = s.lastMessage.text.length > 500 ? `…${s.lastMessage.text.slice(-499)}` : s.lastMessage.text;
+		L.push("## 💬 Last agent message", "", `> ${e(t, 600)}`, "", "_The agent stopped here. If it asked something in the chat it is listed above as a question._", "");
+	}
 
 	L.push("## 🤖 Agents", "");
 	if (s.orchestrators?.length) L.push(...agentGroups(s, e));

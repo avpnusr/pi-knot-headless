@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **"Nothing needs you" is now checkable.** The page header names the state (`running`, `waiting on you: Q1`, `idle — no open question`) and the empty *Needs you* section states the heartbeat time and that an old heartbeat means a stale page. When a run settles, the last assistant message is shown (*Last agent message*). If it asks something in the chat instead of via `knot_ask`, it is mirrored as a critical, answerable question (even if no page existed yet) and dropped when you continue in the chat. Keyword heuristic, see README Limitations.
+
 - **Subagent and nested costs reach the page.** The cost is now re-read a few seconds after every subagent completion and once more before the final write (it was only read when the head's turn settled, so subagents that finished later were missing). Nested runs, which pi-subagents' cost report never includes, get their own `nested runs` line: input/output tokens from the nested event files and the list-price estimate from each finished run's `status.json`. Both lines now also show while the session runs, in a *Usage so far* section.
 
 - **Task column for scripted workflows.** Workers of a scripted workflow (`workflow: true`) now show a task excerpt instead of just the step label. It is read from the `sessionName` pi-subagents stores in the workflow's `status.json` (found through the `asyncDir` of the `subagent:async-started` event; read-only, validated path, size cap). Launch-argument text still wins when available.
