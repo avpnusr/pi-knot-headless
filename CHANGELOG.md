@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Screenshots in the README show the current page design (header state, session id line, last message code block, usage, summary).
+
 - **The pi session id is on the page.** A line under the header shows `pi --session <id>` so the session behind a Knot page can always be reopened (run it from any directory).
 - **The last message stands out.** *Last message from the agent* is now a fenced code block: it is boxed, nothing in it is interpreted as markdown (the fence is always longer than any backtick run in the text, so it cannot break out), line breaks are kept, and secrets are still redacted before the text is cut. Long lines scroll sideways.
 
