@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **A gear (⚙️) marks a running session** instead of ▶: in the page title, the header line, a working subagent and a running orchestrator. The same symbol everywhere; ▶ is a text glyph that some fonts draw plain and tiny.
+
 - Screenshots in the README show the current page design (header state, session id line, last message code block, usage, summary).
 
 - **The pi session id is on the page.** A line under the header shows `pi --session <id>` so the session behind a Knot page can always be reopened (run it from any directory).

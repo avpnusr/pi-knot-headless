@@ -26,7 +26,7 @@ export function defang(text: string): string {
 }
 
 const PALETTE = ["🟣", "🔵", "🟢", "🟡", "🟠", "🟤"]; // colored circles that render as emoji everywhere (⚫⚪ fall back to text glyphs)
-const GLYPH: Record<string, string> = { working: "▶", done: "✅", failed: "❌", waiting: "⏳", idle: "💤", paused: "⏸" };
+const GLYPH: Record<string, string> = { working: "⚙️", done: "✅", failed: "❌", waiting: "⏳", idle: "💤", paused: "⏸" };
 const BY: Record<string, string> = { model: "🤖", user: "👤", timeout: "⏱", system: "🔄" };
 const MAX_AGENTS = 20;
 const MAX_DECISIONS_SHOWN = 8;
@@ -52,8 +52,8 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 	const hm = (ts: number) =>
 		new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: o.tz }).format(ts);
 	const waiting = s.questions.length ? `⏳ waiting on you: ${s.questions.map((q) => q.id).join(", ")}` : "";
-	const icon = s.phase === "ended" ? "✅" : s.phase === "running" ? "▶" : waiting ? "⏳" : "💤";
-	const label = s.phase === "running" ? `▶ running${waiting ? ` · ${waiting}` : ""}` : s.phase === "idle" ? waiting || "💤 idle — no open question; comment to give a new task" : "✅ ended";
+	const icon = s.phase === "ended" ? "✅" : s.phase === "running" ? "⚙️" : waiting ? "⏳" : "💤";
+	const label = s.phase === "running" ? `⚙️ running${waiting ? ` · ${waiting}` : ""}` : s.phase === "idle" ? waiting || "💤 idle — no open question; comment to give a new task" : "✅ ended";
 	const L: string[] = [];
 
 	L.push(`# ${icon} ${e(s.title, 100)}`, "");
@@ -137,7 +137,7 @@ function agentGroups(s: State, e: (t: string, max?: number) => string): string[]
 	}
 	if (L.length) L.push("");
 	for (const o of expOrchs) {
-		const label = o.state === "running" ? "▶ running" : o.state === "done" ? "✅ done" : "❌ failed";
+		const label = o.state === "running" ? "⚙️ running" : o.state === "done" ? "✅ done" : "❌ failed";
 		L.push(...table(`### 🎛 Orchestrator ${o.n} · ${label} · ${workers(o)}`, "Worker", s.agents.filter((a) => a.orch === o.id)));
 		if (o.truncated) L.push("_+ more workers not shown_", "");
 	}

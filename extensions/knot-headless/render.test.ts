@@ -139,7 +139,7 @@ test("one running orchestrator + one direct row", () => {
 		orchestrators: [orch("o1", 1, { state: "running", workers: 2, endedAt: undefined })],
 	};
 	const out = render(s, O);
-	assert.ok(out.includes("### 🎛 Orchestrator 1 · ▶ running · 2 workers"));
+	assert.ok(out.includes("### 🎛 Orchestrator 1 · ⚙️ running · 2 workers"));
 	assert.ok(out.includes("| | Worker | Model | State | Task |"));
 	assert.ok(out.includes("### Direct subagents"));
 	assert.ok(out.includes("| | Agent | Model | State | Task |"));
@@ -154,7 +154,7 @@ test("collapse rule: running + highest-n done expanded, older collapsed", () => 
 		orchestrators: [orch("o1", 1, { workers: 3 }), orch("o2", 2, { workers: 2 }), orch("o3", 3, { state: "running", workers: 1, endedAt: undefined }), orch("o4", 4, { workers: 2 })],
 	};
 	const out = render(s, O);
-	assert.ok(out.includes("### 🎛 Orchestrator 3 · ▶ running"));
+	assert.ok(out.includes("### 🎛 Orchestrator 3 · ⚙️ running"));
 	assert.ok(out.includes("### 🎛 Orchestrator 4 · ✅ done"));
 	assert.ok(out.includes("- ✅ Orchestrator 1 · 3 workers · 4 min"));
 	assert.ok(out.includes("- ✅ Orchestrator 2"));
@@ -255,7 +255,7 @@ test("expanded header says 1 worker (singular)", () => {
 		orchestrators: [orch("o1", 1, { state: "running", workers: 1, endedAt: undefined })],
 	};
 	const out = render(s, O);
-	assert.ok(out.includes("### 🎛 Orchestrator 1 · ▶ running · 1 worker"));
+	assert.ok(out.includes("### 🎛 Orchestrator 1 · ⚙️ running · 1 worker"));
 });
 
 test("orchestrators: [] falls back to the flat table", () => {
@@ -330,7 +330,7 @@ test("banner states: waiting on questions, idle without one, running with one", 
 	const waiting = render({ ...s, phase: "idle" }, O);
 	assert.ok(waiting.includes("> ⏳ waiting on you: Q1"));
 	assert.ok(!waiting.includes("no open question as of"));
-	assert.ok(render({ ...s, phase: "running" }, O).includes("> ▶ running · ⏳ waiting on you: Q1"));
+	assert.ok(render({ ...s, phase: "running" }, O).includes("> ⚙️ running · ⏳ waiting on you: Q1"));
 	assert.ok(render({ ...base(), phase: "ended" }, O).includes("session ended, nothing open"));
 });
 

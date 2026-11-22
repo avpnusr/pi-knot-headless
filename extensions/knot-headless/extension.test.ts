@@ -1282,7 +1282,7 @@ test("the last message is set at every assistant message, also while running; a 
 	await h.handle.tick(); // normal tick, not forced: the write gap has passed
 	assert.equal(h.knot.replaces.length - writes, 1, "the tick wrote exactly once");
 	const page = h.knot.replaces.at(-1)!;
-	assert.ok(page.includes("## 💬 Last message from the agent · 10:00") && page.includes("step 5") && page.includes("▶ running"));
+	assert.ok(page.includes("## 💬 Last message from the agent · 10:00") && page.includes("step 5") && page.includes("⚙️ running"));
 });
 
 test("the first assistant message creates the page; inactive modes make no Knot call", async () => {
