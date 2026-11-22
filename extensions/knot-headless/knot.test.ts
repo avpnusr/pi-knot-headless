@@ -137,3 +137,24 @@ test("oversized, non-JSON and non-array comment bodies are KnotResponseError, no
 		await assert.rejects(fake([r]).knot.listComments(P1), KnotResponseError);
 	}
 });
+
+test("resolveThread: one attempt, 204 ok / 404 gone / any other status refused, never an auth error", async () => {
+	const ROOT = "c1";
+	for (const [status, want] of [[204, "ok"], [404, "gone"], [403, "refused"], [401, "refused"], [429, "refused"], [500, "refused"]] as const) {
+		const { knot, calls, sleeps } = fake([new Response(null, { status })]);
+		assert.equal(await knot.resolveThread(P1, ROOT), want, String(status));
+		assert.equal(calls.length, 1, `${status}: exactly one attempt`);
+		assert.equal(sleeps.length, 0, `${status}: no backoff`);
+		assert.equal(calls[0].init.method, "POST");
+		assert.equal(calls[0].url, `https://knot.example.com/api/docs/${P1}/comments/${ROOT}/resolve`);
+	}
+});
+
+test("resolveThread: a network error is a plain error (not an auth error, not retried); bad ids never hit the network", async () => {
+	const { knot, calls } = fake([new Error("socket hang up")]);
+	await assert.rejects(knot.resolveThread(P1, "c1"), (e: Error) => !(e instanceof KnotAuthError) && /network error/.test(e.message));
+	assert.equal(calls.length, 1);
+	await assert.rejects(knot.resolveThread("not-a-uuid", "c1"), /invalid Knot page id/);
+	await assert.rejects(knot.resolveThread(P1, "../x"), /invalid Knot comment id/);
+	assert.equal(calls.length, 1);
+});

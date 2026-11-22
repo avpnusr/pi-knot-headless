@@ -1191,3 +1191,76 @@ test("no mirroring when aborted, when a knot_ask is already open, or when there 
 	assert.equal(h.handle.state().questions.length, 1);
 	assert.equal(h.handle.state().questions[0].mirrored, undefined);
 });
+
+// ---- comment cleanup (resolve finished threads) ----
+const minorAsk = { question: "Which colour?", severity: "minor", recommended: "blue", why: "default" };
+async function pageWithNotes(n: number, h = harness()) {
+	await h.start();
+	await h.ask(minorAsk); // creates the page, no comment of its own
+	for (let i = 1; i <= n; i++) h.knot.comment(`note ${i}`);
+	return h;
+}
+
+test("cleanup: resolves the oldest finished threads, 3 per poll, also on polls with nothing fresh; the newest 5 stay", async () => {
+	const h = await pageWithNotes(10);
+	await h.handle.tick(true);
+	assert.equal(h.sent.length, 1);
+	assert.deepEqual(h.knot.resolved, ["c1", "c2", "c3"]);
+	await h.handle.tick(true); // nothing fresh
+	assert.deepEqual(h.knot.resolved, ["c1", "c2", "c3", "c4", "c5"]);
+	await h.handle.tick(true);
+	assert.equal(h.knot.resolved.length, 5);
+});
+
+test("cleanup: a delivery that failed and rolled back resolves nothing, the retry does", async () => {
+	const h = await pageWithNotes(10);
+	h.sendThrows = true;
+	await h.handle.tick(true);
+	assert.deepEqual(h.knot.resolved, [], "the session never got these comments");
+	h.sendThrows = false;
+	await h.handle.tick(true);
+	assert.deepEqual(h.knot.resolved, ["c1", "c2", "c3"]);
+});
+
+test("cleanup: not on a self-owned page and not after the session ended", async () => {
+	const own = harness({ settings: { "pi-knot-headless": { url: "https://knot.example.com", parentPageId: PARENT, ownerUid: BOT } } });
+	await pageWithNotes(10, own);
+	await own.handle.tick(true);
+	assert.equal(own.knot.resolveCalls, 0);
+	const h = await pageWithNotes(10);
+	await h.fire("session_shutdown", { reason: "quit" });
+	await h.handle.tick(true);
+	assert.equal(h.knot.resolveCalls, 0);
+});
+
+test("cleanup: a refused or failing resolve stays local: reporting stays on, the page is still written, the refused thread is not retried", async () => {
+	for (const fail of ["refused", new Error("boom"), new KnotAuthError("no")] as const) {
+		const h = await pageWithNotes(10);
+		h.knot.failResolve = fail;
+		const before = h.knot.replaces.length;
+		await h.handle.tick(true);
+		assert.equal(h.knot.resolveCalls, 1, "the batch stops at the first failure");
+		assert.ok(h.knot.replaces.length > before, "page written in the same tick");
+		assert.ok(!h.status.some((x) => x === "knot: disabled" || x === "knot: offline"), String(fail));
+		await h.handle.tick(true);
+		assert.equal(h.knot.resolveCalls, 2, "a refused id is skipped (next candidate tried), a thrown one is retried: one attempt per poll either way");
+		assert.ok(h.handle.state().pageId);
+	}
+});
+
+test("cleanup: a reply into a resolved thread is still delivered; a just-answered old question thread is not resolved", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask(critical); // thread c1, open question
+	for (let i = 2; i <= 7; i++) h.knot.comment(`note ${i}`);
+	await h.handle.tick(true);
+	assert.deepEqual(h.knot.resolved, ["c2"], "c1 is an open question's thread");
+	h.knot.reply("c1", "1"); // the answer: c1 becomes the newest activity
+	await h.handle.tick(true);
+	assert.ok(h.sent.at(-1)!.text.includes("the user answered"));
+	assert.ok(!h.knot.resolved.includes("c1"));
+	assert.deepEqual(h.knot.resolved, ["c2", "c3"]);
+	h.knot.reply("c2", "late thought"); // thread c2 is resolved but the reply must arrive
+	await h.handle.tick(true);
+	assert.ok(h.sent.at(-1)!.text.includes("late thought"));
+});

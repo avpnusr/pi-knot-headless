@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isInert, redact, secretValuesFromEnv, looksLikeAsk, mirrorChatAsk, newState } from "./core.ts";
+import { isInert, redact, secretValuesFromEnv, looksLikeAsk, mirrorChatAsk, newState, pickResolvable } from "./core.ts";
 
 test("isInert: subagent children and non-interactive modes", () => {
 	assert.equal(isInert({ PI_SUBAGENT_CHILD: "1" }, "tui"), true);
@@ -63,4 +63,34 @@ test("mirrorChatAsk: opens a critical, mirrored question built from the tail of 
 	assert.ok(q.text.endsWith("Should I push the release?"));
 	assert.ok(q.text.length < 220);
 	assert.match(r.state.decisions.at(-1)!.text, /asked in the chat, mirrored as Q1/);
+});
+
+const cm = (id: string, sec: number, thread = id, parent: string | null = null, resolved: string | null = null) => ({
+	id, author_id: "u", body: "", created_at: `2026-11-21T10:00:${String(sec).padStart(2, "0")}.000000Z`, thread_id: thread, parent_id: parent, resolved_at: resolved,
+});
+const WM = { id: "z", createdAt: "2026-11-21T10:00:50.000000Z" }; // everything below second 50 is delivered
+const none = new Set<string>();
+
+test("pickResolvable: keeps the newest 5 threads, picks the oldest finished ones, at most `max`", () => {
+	const all = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => cm(`t${n}`, n));
+	assert.deepEqual(pickResolvable(all, WM, [], none), ["t1", "t2", "t3"]);
+	assert.deepEqual(pickResolvable(all, WM, [], none, 5, 2), ["t1", "t2"]);
+	assert.deepEqual(pickResolvable(all.slice(0, 5), WM, [], none), [], "five threads: nothing to clean");
+});
+
+test("pickResolvable: ranks by latest activity, so an answered old thread stays", () => {
+	const all = [cm("t1", 1), cm("r1", 20, "t1", "t1"), ...[2, 3, 4, 5, 6, 7].map((n) => cm(`t${n}`, n))];
+	// t1 has the newest activity (second 20): it is kept, t2..t4 are the oldest of the rest
+	assert.deepEqual(pickResolvable(all, WM, [], none), ["t2", "t3"]);
+});
+
+test("pickResolvable: never an undelivered thread, an open question's thread, a resolved or skipped one", () => {
+	const old = [1, 2, 3, 4].map((n) => cm(`t${n}`, n));
+	const fresh = [5, 6, 7, 8, 9].map((n) => cm(`t${n}`, n));
+	assert.deepEqual(pickResolvable([...old, ...fresh], WM, ["t1"], new Set(["t2"])), ["t3", "t4"], "open + skipped excluded");
+	assert.deepEqual(pickResolvable([cm("t1", 1, "t1", null, "2026-11-21T10:00:09.000000Z"), ...old.slice(1), ...fresh], WM, [], none), ["t2", "t3", "t4"], "already resolved excluded");
+	const wmEarly = { id: "z", createdAt: "2026-11-21T10:00:02.500000Z" }; // only t1 and t2 delivered
+	assert.deepEqual(pickResolvable([...old, ...fresh], wmEarly, [], none), ["t1", "t2"], "t3/t4 are above the watermark");
+	const lateReply = [cm("t1", 1), ...[2, 3, 4, 5, 6, 7].map((n) => cm(`t${n}`, n)), cm("r1", 55, "t1", "t1")]; // reply above the watermark
+	assert.ok(!pickResolvable(lateReply, WM, [], none).includes("t1"), "a thread with an undelivered reply is not finished");
 });

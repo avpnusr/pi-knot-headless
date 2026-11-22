@@ -4,12 +4,12 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
 	isInert, assignDots, nestedByAgent, parseCost, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
-	newComments, mapComment, composeDelivery, timeoutMessage, looksLikeAsk, mirrorChatAsk, isOwnDelivery, type State, type AgentRow, type Severity,
+	newComments, mapComment, composeDelivery, timeoutMessage, looksLikeAsk, mirrorChatAsk, isOwnDelivery, pickResolvable, type State, type AgentRow, type Severity,
 } from "./core.ts";
 import { openAsyncDir, readStepTexts } from "./steptexts.ts";
 import { openRoute, pollRoute, routeCounts, nestedUsage, type Route } from "./nestedroute.ts";
 import { loadConfig, type Config } from "./config.ts";
-import { createKnot, tokenVarFor, KnotAuthError, KnotResponseError, type Knot } from "./knot.ts";
+import { createKnot, tokenVarFor, KnotAuthError, KnotResponseError, type Knot, type Comment } from "./knot.ts";
 import { render, defang } from "./render.ts";
 import { buildSummaryInput, parseSummaryReply, gate, SYSTEM_PROMPT, TITLE_PROMPT } from "./summary.ts";
 import { orchestratorsFromSnapshot, claimWorkerEntries, applyOrchestrators, launchFromArgs, addLaunch, takeDirectTask, type Launch } from "./orchestrators.ts";
@@ -184,13 +184,13 @@ export function create(pi: any, deps: Deps): Handle {
 		}
 	}
 
-	async function pollComments(): Promise<void> {
+	async function pollComments(): Promise<Comment[] | undefined> {
 		if (st.selfOwned) return;
 		await ensureBaseline();
 		const all = await knot!.listComments(st.pageId!);
 		if (stopped || st.phase === "ended") return;
 		const fresh = newComments(all, st.watermark);
-		if (fresh.length === 0) return;
+		if (fresh.length === 0) return all;
 		const prev = st;
 		const last = fresh.at(-1)!;
 		let run: State = { ...st, watermark: { id: last.id, createdAt: last.created_at } };
@@ -204,11 +204,24 @@ export function create(pi: any, deps: Deps): Handle {
 			if (mapped.kind === "answer") run = answerQuestion(run, mapped.qid, mapped.text, "user", deps.now());
 		}
 		st = run;
-		if (items.length === 0) return; // only foreign/own comments: advance in memory, no need to grow the session file
+		if (items.length === 0) return all; // only foreign/own comments: advance in memory, no need to grow the session file
 		persist();
 		if (!(await deliver(composeDelivery(items)))) {
 			st = prev;
 			persist();
+		}
+		return all;
+	}
+
+	// threads whose resolve was refused; not retried within this process
+	const refusedThreads = new Set<string>();
+	/** Hides finished threads (everything delivered, not an open question) beyond the newest 5. Best effort: nothing here may disable reporting or block the page write. */
+	async function cleanupThreads(all: Comment[]): Promise<void> {
+		if (st.selfOwned || stopped || st.phase === "ended" || !st.watermark || !st.pageId) return;
+		for (const id of pickResolvable(all, st.watermark, st.questions.flatMap((q) => (q.threadId ? [q.threadId] : [])), refusedThreads)) {
+			try {
+				if ((await knot!.resolveThread(st.pageId!, id)) === "refused") { refusedThreads.add(id); break; }
+			} catch (e) { log(e); break; }
 		}
 	}
 
@@ -243,14 +256,16 @@ export function create(pi: any, deps: Deps): Handle {
 		if (!active() || !st.pageId) return;
 		try {
 			const now = deps.now();
+			let listed: Comment[] | undefined;
 			if (force || now - lastPoll >= POLL_MS - POLL_SLACK_MS) {
 				lastPoll = now;
 				try { await postQuestionComments(); } catch (e) { if (e instanceof KnotAuthError) throw e; log(e); }
 				// an oversized/malformed comment list must not also stop the dashboard writes; a real outage still goes to knotFailed
-				try { await pollComments(); } catch (x) { if (!(x instanceof KnotResponseError)) throw x; log(x); }
+				try { listed = await pollComments(); } catch (x) { if (!(x instanceof KnotResponseError)) throw x; log(x); }
 				scheduleFleet();
 			}
 			await writePage(force);
+			if (listed) await cleanupThreads(listed);
 			if (offline) { offline = false; setStatus(undefined); }
 		} catch (e) {
 			knotFailed(e);

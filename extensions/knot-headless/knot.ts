@@ -7,11 +7,14 @@ export interface Comment {
 	created_at: string;
 	thread_id: string;
 	parent_id: string | null;
+	resolved_at?: string | null;
 }
 export interface Knot {
 	createPage(title: string, parentId: string): Promise<{ id: string; createdBy: string }>;
 	replace(pageId: string, markdown: string): Promise<void>;
 	rename(pageId: string, title: string): Promise<void>;
+	/** Hides a whole thread (by its root comment id). One attempt, never throws on an HTTP status: "gone" = already resolved/unknown, "refused" = anything else. */
+	resolveThread(pageId: string, rootId: string): Promise<"ok" | "gone" | "refused">;
 	listComments(pageId: string): Promise<Comment[]>;
 	addComment(pageId: string, body: string): Promise<{ id: string; thread_id: string }>;
 }
@@ -27,6 +30,7 @@ const DELAYS = [1000, 2000, 4000, 8000];
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_COMMENTS_BYTES = 2 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const assertCommentId = (id: string) => { if (!/^[\w-]{1,64}$/.test(id)) throw new Error("invalid Knot comment id"); };
 const assertPageId = (pageId: string) => { if (!UUID.test(pageId)) throw new Error("invalid Knot page id"); };
 
 export function createKnot(o: {
@@ -35,7 +39,7 @@ export function createKnot(o: {
 	token: () => string | undefined;
 	sleep: (ms: number) => Promise<void>;
 }): Knot {
-	async function call(method: string, path: string, body?: string, contentType?: string): Promise<Response> {
+	async function call(method: string, path: string, body?: string, contentType?: string, once = false): Promise<Response> {
 		const token = o.token();
 		if (!token) throw new KnotAuthError("no Knot token in the environment (check tokenEnv in the pi-knot-headless settings)");
 		const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
@@ -48,6 +52,10 @@ export function createKnot(o: {
 				res = await o.fetch(`${o.baseUrl}${path}`, { method, headers, body, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 			} catch (e) {
 				last = `network error: ${(e as Error).message}`;
+			}
+			if (once) { // best-effort calls: no retry, and no HTTP status turns into an auth error that would disable reporting
+				if (!res) throw new Error(`Knot ${method} ${path.split("?")[0]} failed: ${last}`);
+				return res;
 			}
 			if (res) {
 				if (res.ok) return res;
@@ -86,6 +94,12 @@ export function createKnot(o: {
 		async rename(pageId, title) {
 			assertPageId(pageId);
 			await call("PATCH", `/api/docs/${pageId}`, JSON.stringify({ title }), "application/json");
+		},
+		async resolveThread(pageId, rootId) {
+			assertPageId(pageId);
+			assertCommentId(rootId);
+			const r = await call("POST", `/api/docs/${pageId}/comments/${rootId}/resolve`, undefined, undefined, true);
+			return r.ok ? "ok" : r.status === 404 ? "gone" : "refused";
 		},
 		async listComments(pageId) {
 			assertPageId(pageId);

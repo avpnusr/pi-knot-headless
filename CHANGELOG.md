@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Old comment threads are resolved.** In long sessions the Knot comment list piled up. Once a thread is finished (every comment in it was delivered to the session, and it is not an open question) and it is not among the newest 5 threads (by latest activity), it is resolved, at most 3 per poll. Resolved threads are hidden in Knot but stay retrievable ("show resolved"), and a late reply into one is still delivered. Answers stay in *Decisions reported*. Best effort: one attempt per thread, a refusal or error never disables reporting or blocks the page write.
+
 ## [0.2.2] - 2026-11-22
 
 - **"Nothing needs you" is now checkable.** The page header names the state (`running`, `waiting on you: Q1`, `idle — no open question`) and the empty *Needs you* section states the heartbeat time and that an old heartbeat means a stale page. When a run settles, the last assistant message is shown (*Last agent message*). If it asks something in the chat instead of via `knot_ask`, it is mirrored as a critical, answerable question (even if no page existed yet) and dropped when you continue in the chat. Keyword heuristic, see README Limitations.

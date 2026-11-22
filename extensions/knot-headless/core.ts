@@ -254,6 +254,29 @@ export function newComments(all: Comment[], wm?: { id: string; createdAt: string
 	return [...all].sort(cmp).filter((c) => !wm || t(c) > w! || (t(c) === w && c.id > wm.id));
 }
 
+/**
+ * Root ids of finished threads that may be resolved: all of the thread is at or below the watermark (so the session has it),
+ * it is not an open question's thread, not already resolved and not in `skip`. The newest `keep` threads (by latest activity,
+ * so a just-answered old thread stays visible) are never touched; oldest first, at most `max`.
+ */
+export function pickResolvable(all: Comment[], wm: { id: string; createdAt: string }, openThreadIds: string[], skip: ReadonlySet<string>, keep = 5, max = 3): string[] {
+	const undelivered = new Set(newComments(all, wm).map((c) => c.id));
+	const threads = new Map<string, { root?: Comment; last: string; done: boolean }>();
+	for (const c of all) {
+		const t = threads.get(c.thread_id) ?? { last: "", done: true };
+		if (!c.parent_id) t.root = c;
+		const ts = normTs(c.created_at);
+		if (ts > t.last) t.last = ts;
+		if (undelivered.has(c.id)) t.done = false;
+		threads.set(c.thread_id, t);
+	}
+	const byActivity = [...threads.entries()].sort((a, b) => (a[1].last < b[1].last ? 1 : a[1].last > b[1].last ? -1 : 0));
+	return byActivity.slice(keep).reverse()
+		.filter(([id, t]) => t.root && t.done && !t.root.resolved_at && !openThreadIds.includes(id) && !skip.has(id))
+		.map(([id]) => id)
+		.slice(0, max);
+}
+
 export function mapComment(c: Comment, s: State, owner: string): Mapped {
 	if (!c.author_id || c.author_id !== owner) return { kind: "ignore" };
 	const body = String(c.body ?? "").slice(0, MAX_COMMENT);

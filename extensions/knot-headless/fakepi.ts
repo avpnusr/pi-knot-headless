@@ -20,12 +20,26 @@ export class FakeKnot implements Knot {
 	failReplace?: Error;
 	renames: string[] = [];
 	failRename?: Error;
+	resolved: string[] = [];
+	resolveCalls = 0;
+	failResolve?: "refused" | Error;
 	private seq = 0;
 	private chk() { this.calls++; if (this.failWith) throw this.failWith; }
 	private stamp() { return `2026-11-21T10:00:${String(++this.seq).padStart(2, "0")}.000000Z`; }
 	async createPage(title: string) { this.chk(); this.created.push(title); return { id: `0ddddddd-0000-4000-8000-${String(this.created.length).padStart(12, "0")}`, createdBy: BOT }; }
 	async replace(_id: string, md: string) { this.chk(); if (this.failReplace) throw this.failReplace; this.replaces.push(md); }
 	async rename(_id: string, title: string) { this.chk(); if (this.failRename) throw this.failRename; this.renames.push(title); }
+	async resolveThread(_id: string, rootId: string) {
+		this.chk();
+		this.resolveCalls++;
+		if (this.failResolve instanceof Error) throw this.failResolve;
+		if (this.failResolve === "refused") return "refused" as const;
+		this.resolved.push(rootId);
+		const root = this.comments.find((c) => c.id === rootId);
+		if (!root || root.resolved_at) return "gone" as const;
+		root.resolved_at = this.stamp();
+		return "ok" as const;
+	}
 	async listComments() { this.chk(); this.listCalls++; if (this.listGate) await this.listGate; return [...this.comments]; }
 	async addComment(_id: string, body: string) {
 		this.chk();
