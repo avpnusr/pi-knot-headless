@@ -92,6 +92,7 @@ export interface NestedCost {
 }
 export interface State {
 	version: 1;
+	sessionId?: string; // the pi session id, shown on the page so the session can be reopened with `pi --session <id>`
 	pageId?: string;
 	pageCreator?: string; // Knot user id that created the page; selfOwned is re-derived from it on every start
 	selfOwned?: boolean; // the page creator is ownerUid, so inbound Knot answers must stay disabled

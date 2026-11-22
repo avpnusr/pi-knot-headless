@@ -472,6 +472,7 @@ export function create(pi: any, deps: Deps): Handle {
 				if (!cfg?.summarizer) st = { ...st, summary: undefined, summaryFp: undefined }; // the user switched the summarizer off: stop showing old text
 			}
 		}
+		st = { ...st, sessionId: ctx.sessionManager?.getSessionId?.() ?? undefined }; // the open session, not a saved one
 		firstPrompt = ""; warnedRun = false;
 		notified.delete(SELF_OWNER_WARNING);
 		if (st.selfOwned) notifyOnce(SELF_OWNER_WARNING);

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { harness, FakeKnot, OWNER, BOT, PARENT, makeRoute, ev, wfDir, WF_ID } from "./fakepi.ts";
+import { harness, SESSION_ID, FakeKnot, OWNER, BOT, PARENT, makeRoute, ev, wfDir, WF_ID } from "./fakepi.ts";
 import { KnotAuthError, KnotResponseError } from "./knot.ts";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1386,4 +1386,16 @@ test("cleanup never resolves a mirrored question's thread", async () => {
 	for (let i = 0; i < 8; i++) h.knot.comment(`note ${i}`);
 	await h.handle.tick(true);
 	assert.ok(h.knot.resolved.length >= 1 && !h.knot.resolved.includes(qThread));
+});
+
+test("the pi session id and resume command are on the page; the id of the open session wins over a saved one", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask(minorAsk);
+	await h.handle.tick(true);
+	assert.equal(h.handle.state().sessionId, SESSION_ID);
+	assert.ok(h.knot.replaces.at(-1)!.includes(`🔁 \`pi --session ${SESSION_ID}\``));
+	const h2 = harness({ entries: h.entries, knot: h.knot });
+	await h2.start("resume", h2.ctx({ sessionManager: { getBranch: () => h.entries, getEntries: () => h.entries, getSessionName: () => undefined, getSessionId: () => "0198b2c4-bbbb-7000-8000-000000000010" } }));
+	assert.equal(h2.handle.state().sessionId, "0198b2c4-bbbb-7000-8000-000000000010", "the id of the session that is open now, not the saved one");
 });

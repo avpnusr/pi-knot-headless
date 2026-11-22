@@ -9,6 +9,7 @@ export const OWNER = "0aaaaaaa-0000-4000-8000-000000000001";
 export const BOT = "0bbbbbbb-0000-4000-8000-000000000002";
 export const PARENT = "0ccccccc-0000-4000-8000-000000000003";
 
+export const SESSION_ID = "0198b2c4-aaaa-7000-8000-00000000000f";
 export class FakeKnot implements Knot {
 	replaces: string[] = [];
 	created: string[] = [];
@@ -70,7 +71,7 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 		pi: undefined as any,
 		ctx: (over: any = {}) => ({
 			mode: "tui", model: { provider: "claude-bridge", id: "opus" }, cwd: "/work/demo",
-			sessionManager: { getBranch: () => entries, getSessionName: () => undefined },
+			sessionManager: { getBranch: () => entries, getSessionName: () => undefined, getSessionId: () => SESSION_ID },
 			modelRegistry: {
 				find: (p: string, id: string) => (h.llm.models.includes(`${p}/${id}`) ? { provider: p, id } : undefined),
 				complete: async (model: any, context: any, options: any) => {

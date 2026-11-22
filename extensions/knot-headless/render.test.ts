@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { newState, askQuestion, logDecision, assignDots, type State, type AgentRow, type Orchestrator } from "./core.ts";
-import { escLines, render, esc, defang } from "./render.ts";
+import { codeBlock, render, esc, defang } from "./render.ts";
 
 const O = { now: Date.UTC(2026, 10, 21, 14, 30), tz: "UTC" };
 const base = (): State => newState(Date.UTC(2026, 10, 21, 14, 2), "demo · fix the build", "claude-opus-5-5");
@@ -334,21 +334,29 @@ test("banner states: waiting on questions, idle without one, running with one", 
 	assert.ok(render({ ...base(), phase: "ended" }, O).includes("session ended, nothing open"));
 });
 
-test("last message: every phase, with time and footnote, redacted and escaped, line breaks kept", () => {
-	const lm = { text: "Done: all green.\n\nNext: key sk-abcdefghijklmnop1234 | # head", at: O.now - 1_680_000 };
+test("last message: a fenced code block in every phase, with time and footnote, redacted, text kept literal", () => {
+	const lm = { text: "Done: all green.\n\n\n- next: key sk-abcdefghijklmnop1234 | # head  ", at: O.now - 1_680_000 };
 	for (const phase of ["running", "idle", "ended"] as const) {
 		const out = render({ ...base(), phase, lastMessage: lm }, O);
-		assert.ok(out.includes("## 💬 Last message from the agent · 14:02"), phase);
-		assert.ok(out.includes("> Done: all green.\n>\n> Next: key "), `${phase}: line breaks kept`);
-		assert.ok(out.includes("redacted") && !out.includes("sk-abcdefghijklmnop"), phase);
+		assert.ok(out.includes("## 💬 Last message from the agent · 14:02\n\n```\nDone: all green.\n\n- next: key [redacted] | # head\n```\n"), phase);
+		assert.ok(!out.includes("sk-abcdefghijklmnop"), phase);
 		assert.ok(out.includes("tool approvals and dialogs are not visible here"), phase);
-		assert.ok(!/^\s*> ?# head/m.test(out) && out.includes("\\| \\# head"), phase);
 	}
 	assert.ok(!render(base(), O).includes("Last message from the agent"), "nothing said yet: no section");
 });
 
-test("escLines: markdown line-start injections are neutralised, blank runs collapse, secrets are redacted before the cap", () => {
-	const lines = escLines("---\n===\n# x\n1. a\n2) b\n- c\n+ d\n    indented\n\n\n\nend", [], 1500);
-	assert.deepEqual(lines, ["\\---", "\\===", "\\# x", "1\\. a", "2\\) b", "\\- c", "\\+ d", "indented", "", "end"]);
-	assert.ok(!escLines(`${"x".repeat(1490)} tok-secret-value-123`, ["tok-secret-value-123"], 1500).join("").includes("tok-sec"), "no fragment of a secret at the cap (redact first, then cut)");
+test("codeBlock: a fence longer than any backtick run in the text, so the message cannot break out; secrets redacted before the cap", () => {
+	assert.deepEqual(codeBlock("a\nb"), ["```", "a", "b", "```"]);
+	assert.deepEqual(codeBlock("x ``` y\n# pwn"), ["````", "x ``` y", "# pwn", "````"]);
+	assert.deepEqual(codeBlock("`````x"), ["``````", "`````x", "``````"]);
+	assert.ok(!codeBlock(`${"x".repeat(1490)} tok-secret-value-123`, ["tok-secret-value-123"], 1500).join("").includes("tok-sec"), "redact first, then cut");
+});
+
+test("resume line: the pi session id with the resume command, in every phase; odd ids are not rendered", () => {
+	for (const phase of ["running", "idle", "ended"] as const) {
+		const out = render({ ...base(), phase, sessionId: "0198b2c4-aaaa-7000-8000-00000000000f" }, O);
+		assert.ok(out.includes("🔁 `pi --session 0198b2c4-aaaa-7000-8000-00000000000f`"), phase);
+	}
+	assert.ok(!render({ ...base(), sessionId: "x`; rm -rf /" }, O).includes("pi --session"));
+	assert.ok(!render(base(), O).includes("pi --session"));
 });

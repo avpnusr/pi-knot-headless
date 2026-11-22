@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- **The pi session id is on the page.** A line under the header shows `pi --session <id>` so the session behind a Knot page can always be reopened (run it from any directory).
+- **The last message stands out.** *Last message from the agent* is now a fenced code block: it is boxed, nothing in it is interpreted as markdown (the fence is always longer than any backtick run in the text, so it cannot break out), line breaks are kept, and secrets are still redacted before the text is cut. Long lines scroll sideways.
+
 ## [0.2.3] - 2026-11-22
 
 - **The page always shows the agent's latest CLI message** (*Last message from the agent · HH:MM*), in every phase including while the agent is running and after the session ended, so Knot alone is enough to see whether something is due or the task finished. It is set at every assistant message, replaced by the next (nothing piles up), redacted before long text is elided (first 600 + last 800 characters), and rendered line by line with markdown line-start markers neutralised. The first assistant message of every TUI/RPC session now creates the page (retried at most once per 20 s while Knot is down); it used to be created lazily. Not yet visible: pi's own tool-approval and dialog prompts (the page says so).
