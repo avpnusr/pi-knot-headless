@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-22
+
 - **A send into the session that keeps failing backs off.** When `sendUserMessage` throws (an answer, a comment or a timeout notice), the retry now waits 20 s, 40 s, 80 s ... up to 5 minutes instead of every poll, and each retry no longer writes a fresh state snapshot into the session file. The header shows `⚠ delivery to the session is failing (n attempts)` and pi's status line `knot: delivery failing (n)` until a send works. Comments stay undelivered (and unresolved) meanwhile.
 - **Two sessions in one process no longer clobber each other.** The poll timer is kept per session id (a reload still replaces its own old timer) and pending subagent launches belong to their session. Before, starting a second session stopped the first one's polling.
 - **`&` is escaped on the page** (Knot decodes entities, verified), so an entity such as `&#58;` can no longer rebuild a URL or mention the escaping had defanged.
