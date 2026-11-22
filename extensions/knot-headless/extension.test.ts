@@ -1125,7 +1125,9 @@ test("a run that ends asking in the chat is mirrored to Knot as an answerable qu
 	assert.equal(h.handle.state().questions.length, 0);
 });
 
-test("a mirrored question disappears when the user continues in the chat; a plain report only shows as last message", async () => {
+const user = (h: any, text: string) => h.fire("message_end", { message: { role: "user", content: [{ type: "text", text }] } });
+
+test("a mirrored question is dropped (and logged) only by a real user chat message, not by the extension's own steers or a bare agent_start", async () => {
 	const h = harness();
 	await h.start();
 	await h.fire("agent_start");
@@ -1133,9 +1135,16 @@ test("a mirrored question disappears when the user continues in the chat; a plai
 	await h.fire("agent_settled", { aborted: false });
 	await h.flush(); await h.flush();
 	assert.equal(h.handle.state().questions.length, 1);
-	await h.fire("agent_start"); // the user answered in the chat
-	assert.equal(h.handle.state().questions.length, 0);
+	await h.fire("agent_start");
+	await user(h, "Knot answer to Q9: \"x\" — the user answered: \"y\"");
+	await user(h, "[Knot message from user] \"hello\"");
+	await user(h, "Q9 \"x\" unanswered on Knot after 2 h; proceed with: \"y\"");
+	await h.fire("message_end", { message: { role: "toolResult", content: [{ type: "text", text: "output" }] } });
+	assert.equal(h.handle.state().questions.length, 1, "own steers, tool results and agent_start must not drop it");
 	assert.equal(h.handle.state().lastMessage, undefined);
+	await user(h, "yes, push it"); // the user answered in the chat
+	assert.equal(h.handle.state().questions.length, 0);
+	assert.match(h.handle.state().decisions.at(-1)!.text, /Q1 dropped: you continued in the chat/);
 	await say(h, "Pushed. All done.");
 	await h.fire("agent_settled", { aborted: false });
 	await h.flush(); await h.flush();
@@ -1143,6 +1152,24 @@ test("a mirrored question disappears when the user continues in the chat; a plai
 	assert.equal(st.questions.length, 0);
 	assert.equal(st.lastMessage?.text, "Pushed. All done.");
 	assert.ok(h.knot.replaces.at(-1)!.includes("Last agent message"));
+});
+
+test("a mirrored question survives a restart and stays answerable; the secret at the cut is redacted before slicing", async () => {
+	const key = "sk-abcdefghijklmnop1234567890";
+	const h = harness();
+	await h.start();
+	await h.fire("agent_start");
+	await say(h, `${key} ${"y".repeat(150)} Should I push?`); // the 180-char cut lands inside the key
+	await h.fire("agent_settled", { aborted: false });
+	await h.flush(); await h.flush();
+	const all = JSON.stringify(h.knot.comments) + h.knot.replaces.join("");
+	assert.ok(!all.includes("1234567890"), "no fragment of the key reaches Knot");
+	const h2 = harness({ entries: h.entries, knot: h.knot });
+	await h2.start("resume");
+	assert.equal(h2.handle.state().questions[0].mirrored, true);
+	h.knot.reply(h.knot.comments[0].thread_id!, "go");
+	await h2.handle.tick(true);
+	assert.match(h2.sent.at(-1)!.text, /the user answered: "go"/);
 });
 
 test("no mirroring when aborted, when a knot_ask is already open, or when there is no page and nothing was asked", async () => {

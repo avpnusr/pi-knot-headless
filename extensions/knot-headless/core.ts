@@ -302,6 +302,9 @@ export function composeDelivery(items: { mapped: Mapped; s: State }[]): string {
 	return parts.join("\n\n");
 }
 
+/** True for the texts this extension steers into the session; any other user message means the user is talking in the chat. */
+export const isOwnDelivery = (text: string): boolean => /^(Knot answer to Q\d+: |\[Knot message from user\] |Q\d+ ".*?" unanswered on Knot after )/s.test(text.trimStart());
+
 export function timeoutMessage(q: Question, minutes: number): string {
 	const after = minutes % 60 === 0 ? `${minutes / 60} h` : `${minutes} min`;
 	return `${q.id} ${quote(q.text)} unanswered on Knot after ${after}; if the user already decided this elsewhere keep that, otherwise proceed with: ${q.recommended ? quote(q.recommended) : "your best judgement"}`;

@@ -335,9 +335,9 @@ test("banner states: waiting on questions, idle without one, running with one", 
 });
 
 test("last agent message shows only while idle, tail-cut, redacted and escaped", () => {
-	const lm = { text: `${"a".repeat(800)} # head | key sk-abcdefghijklmnop1234 done`, at: 1 };
+	const lm = { text: `${"a".repeat(800)} # head | key sk-abcdefghijklmnop1234 done`, at: O.now - 1_680_000 };
 	const out = render({ ...base(), lastMessage: lm }, O);
-	assert.ok(out.includes("## 💬 Last agent message"));
+	assert.ok(out.includes("## 💬 Last agent message · 14:02"));
 	assert.ok(out.includes("…"));
 	assert.ok(out.includes("done"));
 	assert.ok(out.includes("redacted") && !out.includes("sk-abcdefghijklmnop"));

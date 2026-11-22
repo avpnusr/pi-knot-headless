@@ -61,7 +61,7 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 
 	if (s.phase === "idle" && s.lastMessage) {
 		const t = s.lastMessage.text.length > 500 ? `…${s.lastMessage.text.slice(-499)}` : s.lastMessage.text;
-		L.push("## 💬 Last agent message", "", `> ${e(t, 600)}`, "", "_The agent stopped here. If it asked something in the chat it is listed above as a question._", "");
+		L.push(`## 💬 Last agent message · ${hm(s.lastMessage.at)}`, "", `> ${e(t, 600)}`, "", "_The agent stopped here. If it asked something in the chat it is listed above as a question._", "");
 	}
 
 	L.push("## 🤖 Agents", "");
