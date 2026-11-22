@@ -1141,7 +1141,7 @@ test("a mirrored question is dropped (and logged) only by a real user chat messa
 	await user(h, "Q9 \"x\" unanswered on Knot after 2 h; proceed with: \"y\"");
 	await h.fire("message_end", { message: { role: "toolResult", content: [{ type: "text", text: "output" }] } });
 	assert.equal(h.handle.state().questions.length, 1, "own steers, tool results and agent_start must not drop it");
-	assert.equal(h.handle.state().lastMessage, undefined);
+	assert.equal(h.handle.state().lastMessage?.text, "Shall I push?", "agent_start does not clear the last message");
 	await user(h, "yes, push it"); // the user answered in the chat
 	assert.equal(h.handle.state().questions.length, 0);
 	assert.match(h.handle.state().decisions.at(-1)!.text, /Q1 dropped: you continued in the chat/);
@@ -1151,7 +1151,7 @@ test("a mirrored question is dropped (and logged) only by a real user chat messa
 	const st = h.handle.state();
 	assert.equal(st.questions.length, 0);
 	assert.equal(st.lastMessage?.text, "Pushed. All done.");
-	assert.ok(h.knot.replaces.at(-1)!.includes("Last agent message"));
+	assert.ok(h.knot.replaces.at(-1)!.includes("Last message from the agent"));
 });
 
 test("a mirrored question survives a restart and stays answerable; the secret at the cut is redacted before slicing", async () => {
@@ -1172,7 +1172,7 @@ test("a mirrored question survives a restart and stays answerable; the secret at
 	assert.match(h2.sent.at(-1)!.text, /the user answered: "go"/);
 });
 
-test("no mirroring when aborted, when a knot_ask is already open, or when there is no page and nothing was asked", async () => {
+test("no mirroring when aborted, when a knot_ask is already open, or when the message is a plain report", async () => {
 	const h = harness();
 	await h.start();
 	await h.fire("agent_start");
@@ -1183,7 +1183,7 @@ test("no mirroring when aborted, when a knot_ask is already open, or when there 
 	await say(h, "Report only.");
 	await h.fire("agent_settled", { aborted: false });
 	await h.flush();
-	assert.equal(h.knot.created.length, 0);
+	assert.equal(h.knot.comments.length, 0, "a plain report opens no question");
 	await h.ask(critical);
 	await h.fire("agent_start");
 	await say(h, "Should I? (the real question is Q1)");
@@ -1263,4 +1263,82 @@ test("cleanup: a reply into a resolved thread is still delivered; a just-answere
 	h.knot.reply("c2", "late thought"); // thread c2 is resolved but the reply must arrive
 	await h.handle.tick(true);
 	assert.ok(h.sent.at(-1)!.text.includes("late thought"));
+});
+
+// ---- last message, always ----
+test("the last message is set at every assistant message, also while running; a normal tick publishes it, nothing is saved per message", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask(minorAsk);
+	await h.fire("agent_start");
+	const saved = h.entries.length, writes = h.knot.replaces.length;
+	for (let i = 1; i <= 5; i++) await say(h, `step ${i}`);
+	assert.equal(h.entries.length, saved, "no appendEntry per message");
+	assert.equal(h.handle.state().lastMessage?.text, "step 5");
+	assert.ok(h.knot.replaces.length - writes <= 1, "no write storm");
+	h.clock.t += 20_000;
+	await h.handle.tick(); // normal tick, not forced: the write gap has passed
+	const page = h.knot.replaces.at(-1)!;
+	assert.ok(page.includes("## 💬 Last message from the agent · 10:00") && page.includes("step 5") && page.includes("▶ running"));
+});
+
+test("the first assistant message creates the page; inactive modes make no Knot call", async () => {
+	const h = harness();
+	await h.start();
+	assert.equal(h.knot.created.length, 0);
+	await say(h, "Hello, working on it.");
+	await h.flush(); await h.flush();
+	assert.equal(h.knot.created.length, 1);
+	assert.ok(h.knot.replaces.at(-1)!.includes("Hello, working on it."));
+	await say(h, "second");
+	await h.flush();
+	assert.equal(h.knot.created.length, 1, "only the first message creates a page");
+
+	const p = harness();
+	await p.start("startup", p.ctx({ mode: "print" }));
+	await say(p, "hi");
+	await p.flush();
+	assert.equal(p.knot.calls, 0);
+
+	const o = harness();
+	await o.start();
+	await o.commands.get("knot").handler("off", o.ctx());
+	await say(o, "hi");
+	await o.flush();
+	assert.equal(o.knot.calls, 0);
+});
+
+test("the settled run keeps the full elided message (not a tail cut), persists it, and a resume restores it", async () => {
+	const key = "sk-abcdefghijklmnop1234567890";
+	const h = harness();
+	await h.start();
+	await h.fire("agent_start");
+	await say(h, `${"a".repeat(590)} ${key} ${"b".repeat(1500)} THE END`); // the head cut (600) lands inside the key
+	await h.fire("agent_settled", { aborted: false });
+	await h.flush(); await h.flush();
+	const t = h.handle.state().lastMessage!.text;
+	assert.ok(t.startsWith("a".repeat(590)) && t.includes("…") && t.endsWith("THE END"), "head and tail kept");
+	assert.ok(!t.includes("abcdefgh") && !t.includes("sk-"), "redacted before eliding");
+	const h2 = harness({ entries: h.entries, knot: h.knot });
+	await h2.start("resume");
+	assert.equal(h2.handle.state().lastMessage?.text, t);
+});
+
+test("page creation on messages is retried at most once per poll interval while Knot is down", async () => {
+	const h = harness();
+	await h.start();
+	h.knot.failWith = new Error("down");
+	for (let i = 0; i < 6; i++) await say(h, `msg ${i}`);
+	await h.flush(); await h.flush();
+	assert.equal(h.knot.calls, 1, "one create attempt for six messages");
+	h.clock.t += 20_000;
+	await say(h, "later");
+	await h.flush(); await h.flush();
+	assert.equal(h.knot.calls, 2);
+	h.knot.failWith = undefined;
+	h.clock.t += 20_000;
+	await say(h, "back");
+	await h.flush(); await h.flush();
+	assert.equal(h.knot.created.length, 1);
+	assert.ok(h.knot.replaces.at(-1)!.includes("back"));
 });

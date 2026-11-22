@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isInert, redact, secretValuesFromEnv, looksLikeAsk, mirrorChatAsk, newState, pickResolvable } from "./core.ts";
+import { isInert, redact, secretValuesFromEnv, looksLikeAsk, mirrorChatAsk, newState, pickResolvable, elide } from "./core.ts";
 
 test("isInert: subagent children and non-interactive modes", () => {
 	assert.equal(isInert({ PI_SUBAGENT_CHILD: "1" }, "tui"), true);
@@ -93,4 +93,13 @@ test("pickResolvable: never an undelivered thread, an open question's thread, a 
 	assert.deepEqual(pickResolvable([...old, ...fresh], wmEarly, [], none), ["t1", "t2"], "t3/t4 are above the watermark");
 	const lateReply = [cm("t1", 1), ...[2, 3, 4, 5, 6, 7].map((n) => cm(`t${n}`, n)), cm("r1", 55, "t1", "t1")]; // reply above the watermark
 	assert.ok(!pickResolvable(lateReply, WM, [], none).includes("t1"), "a thread with an undelivered reply is not finished");
+});
+
+test("elide: up to 1400 chars unchanged, longer keeps head 600 and tail 800 around an ellipsis line", () => {
+	const t = "a".repeat(1400);
+	assert.equal(elide(t), t);
+	const long = `${"h".repeat(600)}${"m".repeat(500)}${"t".repeat(800)}`;
+	const out = elide(long);
+	assert.equal(out, `${"h".repeat(600)}\n…\n${"t".repeat(800)}`);
+	assert.ok(!out.includes("m"));
 });

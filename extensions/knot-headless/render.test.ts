@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { newState, askQuestion, logDecision, assignDots, type State, type AgentRow, type Orchestrator } from "./core.ts";
-import { render, esc, defang } from "./render.ts";
+import { escLines, render, esc, defang } from "./render.ts";
 
 const O = { now: Date.UTC(2026, 10, 21, 14, 30), tz: "UTC" };
 const base = (): State => newState(Date.UTC(2026, 10, 21, 14, 2), "demo · fix the build", "claude-opus-5-5");
@@ -334,14 +334,21 @@ test("banner states: waiting on questions, idle without one, running with one", 
 	assert.ok(render({ ...base(), phase: "ended" }, O).includes("session ended, nothing open"));
 });
 
-test("last agent message shows only while idle, tail-cut, redacted and escaped", () => {
-	const lm = { text: `${"a".repeat(800)} # head | key sk-abcdefghijklmnop1234 done`, at: O.now - 1_680_000 };
-	const out = render({ ...base(), lastMessage: lm }, O);
-	assert.ok(out.includes("## 💬 Last agent message · 14:02"));
-	assert.ok(out.includes("…"));
-	assert.ok(out.includes("done"));
-	assert.ok(out.includes("redacted") && !out.includes("sk-abcdefghijklmnop"));
-	assert.ok(!/^\s*# head/m.test(out));
-	assert.ok(!render({ ...base(), phase: "running", lastMessage: lm }, O).includes("Last agent message"));
-	assert.ok(!render(base(), O).includes("Last agent message"));
+test("last message: every phase, with time and footnote, redacted and escaped, line breaks kept", () => {
+	const lm = { text: "Done: all green.\n\nNext: key sk-abcdefghijklmnop1234 | # head", at: O.now - 1_680_000 };
+	for (const phase of ["running", "idle", "ended"] as const) {
+		const out = render({ ...base(), phase, lastMessage: lm }, O);
+		assert.ok(out.includes("## 💬 Last message from the agent · 14:02"), phase);
+		assert.ok(out.includes("> Done: all green.\n>\n> Next: key "), `${phase}: line breaks kept`);
+		assert.ok(out.includes("redacted") && !out.includes("sk-abcdefghijklmnop"), phase);
+		assert.ok(out.includes("tool approvals and dialogs are not visible here"), phase);
+		assert.ok(!/^\s*> ?# head/m.test(out) && out.includes("\\| \\# head"), phase);
+	}
+	assert.ok(!render(base(), O).includes("Last message from the agent"), "nothing said yet: no section");
+});
+
+test("escLines: markdown line-start injections are neutralised, blank runs collapse, secrets are redacted before the cap", () => {
+	const lines = escLines("---\n===\n# x\n1. a\n2) b\n- c\n+ d\n    indented\n\n\n\nend", [], 1500);
+	assert.deepEqual(lines, ["\\---", "\\===", "\\# x", "1\\. a", "2\\) b", "\\- c", "\\+ d", "indented", "", "end"]);
+	assert.ok(!escLines(`${"x".repeat(1490)} tok-secret-value-123`, ["tok-secret-value-123"], 1500).join("").includes("secret"), "no fragment of a secret at the cap");
 });

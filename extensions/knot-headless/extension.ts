@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
 	isInert, assignDots, nestedByAgent, parseCost, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
-	newComments, mapComment, composeDelivery, timeoutMessage, looksLikeAsk, mirrorChatAsk, isOwnDelivery, pickResolvable, type State, type AgentRow, type Severity,
+	newComments, mapComment, composeDelivery, timeoutMessage, looksLikeAsk, mirrorChatAsk, isOwnDelivery, pickResolvable, elide, type State, type AgentRow, type Severity,
 } from "./core.ts";
 import { openAsyncDir, readStepTexts } from "./steptexts.ts";
 import { openRoute, pollRoute, routeCounts, nestedUsage, type Route } from "./nestedroute.ts";
@@ -98,6 +98,7 @@ export function create(pi: any, deps: Deps): Handle {
 	const notified = new Set<string>();
 	let firstPrompt = "";
 	let warnedRun = false;
+	let lastCreateTry = 0;
 	let lastText = ""; // last assistant text of the current run
 	let fleetTimer: unknown;
 	const wfDirs = new Map<string, { dir: string; done: boolean; texts: Map<string, string> }>(); // workflow id -> async dir + latest step texts
@@ -511,7 +512,12 @@ export function create(pi: any, deps: Deps): Handle {
 		const m = event?.message;
 		if (m?.role === "assistant") {
 			const t = textOf(m);
-			if (t) lastText = t;
+			if (t) {
+				lastText = t;
+				// what the CLI shows is what the page shows; in memory only (persisted at agent_settled), the page write is throttled
+				st = { ...st, lastMessage: { text: elide(clean(t)), at: deps.now() } };
+				if (!st.pageId && active() && deps.now() - lastCreateTry >= POLL_MS) { lastCreateTry = deps.now(); void launchTrigger(); } // the first message of a session creates the page; retried at most once per poll interval while Knot is down
+			}
 		} else if (m?.role === "user" && st.questions.some((q) => q.mirrored) && !isOwnDelivery(textOf(m))) {
 			// the user continued in the chat: a copied-from-chat question is obsolete. Our own steers (answers, timeouts, comments) start runs too and must not drop it.
 			const dropped = st.questions.filter((q) => q.mirrored);
@@ -522,7 +528,7 @@ export function create(pi: any, deps: Deps): Handle {
 
 	pi.on("agent_start", guard(() => {
 		lastText = "";
-		st = { ...st, phase: "running", headActivity: "working", lastMessage: undefined }; // the last message is no longer the last word
+		st = { ...st, phase: "running", headActivity: "working" };
 	}));
 
 	pi.on("tool_execution_start", guard((event: any) => {
@@ -550,18 +556,13 @@ export function create(pi: any, deps: Deps): Handle {
 		}
 		st = { ...st, mutated: false, decidedThisRun: 0, runs: (st.runs ?? 0) + (st.pageId ? 1 : 0) };
 		warnedRun = false;
-		// whatever the agent said last must be visible on the page; a question asked only in the chat becomes a real one
+		// a question asked only in the chat becomes a real one (the message itself is already on the page via message_end)
 		const text = clean(lastText); // redact before any cut, so a token cannot be split into an unrecognisable fragment
 		lastText = "";
-		if (active() && text && !event?.aborted && st.questions.length === 0) {
-			const asks = looksLikeAsk(text) && !st.selfOwned;
-			if (asks || st.pageId) {
-				st = { ...st, lastMessage: { text: text.slice(-2000), at: deps.now() } };
-				if (asks) st = mirrorChatAsk(st, text, deps.now()).state;
-				persist();
-				void launchTrigger().then(() => handle.tick(true)).catch(log);
-			}
-		}
+		const asks = active() && !!text && !event?.aborted && st.questions.length === 0 && !st.selfOwned && looksLikeAsk(text);
+		if (asks) st = mirrorChatAsk(st, text, deps.now()).state;
+		if (active()) persist();
+		if (asks || (active() && st.pageId)) void launchTrigger().then(() => handle.tick(true)).catch(log); // the final message must not wait for the next tick
 		void readCost().then(() => handle.tick()).catch(log);
 		void summarize().then(() => handle.tick()).catch(log); // independent of the cost read: pi-subagents may be absent
 	}));

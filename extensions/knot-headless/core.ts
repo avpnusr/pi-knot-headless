@@ -117,7 +117,7 @@ export interface State {
 	agentsDropped?: number; // rows pushed out of the capped agents list
 	cost?: Cost;
 	nestedCost?: NestedCost;
-	lastMessage?: { text: string; at: number }; // last assistant text of the settled run, shown while idle so "no question" is checkable
+	lastMessage?: { text: string; at: number }; // newest assistant text, redacted and elided; set at message_end in every phase so Knot alone shows what the CLI shows
 	summary?: { text: string; model: string; at: number };
 	summaryFp?: string;
 	sum?: { calls: number; tokens: number; usd: number; attempts?: number }; // our own accounting of summarizer calls
@@ -201,6 +201,9 @@ export function askQuestion(
 	};
 	return { state: { ...s, questions: [...s.questions, q], nextQ: s.nextQ + 1, decidedThisRun: s.decidedThisRun + 1 }, qid: q.id };
 }
+
+/** Keeps head and tail of a long message: the start says what happened, the end carries the question. */
+export const elide = (t: string): string => (t.length > 1400 ? `${t.slice(0, 600)}\n…\n${t.slice(-800)}` : t);
 
 // shortcut: keyword heuristic on the last paragraph; a miss still shows the message as "Last agent message", a false hit only opens a question the next chat message clears. Upgrade: let the summarizer model classify.
 const ASK_PHRASES = /\b(shall i|should i|want me to|do you want|would you like|let me know|confirm|approve|go-ahead|go ahead|your call|which (one|option|do you)|awaiting|waiting for (you|your))\b/i;

@@ -63,7 +63,7 @@ Inert (no tools, no timers, no network) if `process.env.PI_SUBAGENT_CHILD === "1
 `index.ts` (wiring, state, tools, command, single-flight I/O loop), `knot.ts` (API client: create, replace, comments, token pick, redaction, backoff; never throws into pi), `render.ts` (**pure** `render(state) → markdown`, snapshot-tested).
 
 ### Page (write-only dashboard; no moving parts)
-Header (state, title, "started HH:MM", last heartbeat) → 🧠 head line (model, current activity) → **Needs you** (open questions with ids `Q1…` and numbered options `Q1.1 …`; empty = "no open question as of <heartbeat>" with a staleness note; idle runs also show the last agent message, and chat-only questions are mirrored as Q items) → agents table → **Decisions reported** (last 8 + "N older") → footer (how to answer).
+Header (state, title, "started HH:MM", last heartbeat) → 🧠 head line (model, current activity) → **Needs you** (open questions with ids `Q1…` and numbered options `Q1.1 …`; empty = "no open question as of <heartbeat>" with a staleness note; chat-only questions are mirrored as Q items; **Last message from the agent · HH:MM** (newest assistant text, set at every `message_end`, redacted and elided to head 600 + tail 800, shown in every phase, replaced not appended; spec `docs/superpowers/specs/2026-11-22-quiet-comments-last-message-design.md`)) → agents table → **Decisions reported** (last 8 + "N older") → footer (how to answer).
 - Identity dot per agent name, stable palette 🟣🔵🟢🟡🟠🟤 (hash of name); head 🧠. Status glyph separate, never a colored dot: ▶ working ✅ done ❌ failed ⏳ waiting for you 💤 idle ⏸ paused.
 - **Page states:** ▶ running, 💤 idle ("comment to give a new task"; polling continues), ✅ ended (only on `session_shutdown` with `reason` ≠ `reload`). Ended page: outcome line, duration, models used, subagent table (final), decisions, cost via RPC `cost` (once). Note "N background runs still running; results not delivered" if detached runs remain.
 - Writes: skip if markdown byte-identical to the last write; ≥15–30 s apart (trailing debounce); heartbeat line refreshed every 5 min; always `?mode=replace`.
@@ -90,7 +90,7 @@ Model rule (tool `promptGuidelines`): when unsure choose the higher severity; ca
 - Unsolicited comments are delivered even when idle (the headless feature).
 
 ### Lifecycle
-- **Creation:** lazy — first subagent launch, first `knot_ask`, or `/knot on`. Title `<folder> · <speaking name>` (session name, else first prompt ≤6 words, redacted).
+- **Creation:** first assistant message of a session (changed after 0.2.2, was lazy: first subagent launch, first `knot_ask`, or `/knot on`, which still create it earlier if they come first). Title `<folder> · <speaking name>` (session name, else first prompt ≤6 words, redacted).
 - **Timers:** started only in `session_start`, cleared in idempotent `session_shutdown`; handle also on a `globalThis` symbol and cleared at start (reload safety).
 - **Session events:** `reload` → keep page, continue. `new`/`resume`/`fork` → old session's page ends; on `fork` drop the inherited page id (new page on demand); `resume` reuses the session's page.
 - **Subagent state:** one RPC `status` read at `session_start`, then on `subagent:*` events (coalesced 250 ms) plus a slow safety read on the poll tick. Top-level children shown; nested fan-out as a count.
@@ -122,7 +122,7 @@ Palette, exact emoji/wording, debounce numbers, snapshot tooling, internal file 
 ## My calls (user to confirm, beyond what they decided)
 1. Severity policy: minor no wait; normal 2 h then default; critical indefinite.
 2. Non-blocking `knot_ask` + question comments with thread replies.
-3. Lazy page creation; “ended” only on quit; manual cleanup.
+3. Page created at the first assistant message (was lazy up to 0.2.2); “ended” only on quit; old comment threads are resolved (newest 5 kept), pages are cleaned up manually.
 4. Speaking name from session name / first prompt (no LLM).
 5. Page token pinned to the creating model's provider; 🔄 hint on model switch.
 

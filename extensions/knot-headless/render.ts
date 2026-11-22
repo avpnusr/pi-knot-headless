@@ -6,6 +6,18 @@ export function esc(text: string, max = 80): string {
 	return t.replace(/([\\`*_{}\[\]<>#|~@])/g, "\\$1").replace(/:\/\//g, ":\\//").replace(/www\./gi, "www\u200b."); // no live links, mentions or images
 }
 
+/** Multi-line text for a blockquote: redacted, then capped, then escaped line by line (blank runs collapse, markdown line-start markers are neutralised, indentation dropped). */
+export function escLines(text: string, secrets: string[] = [], max = 1500): string[] {
+	const out: string[] = [];
+	for (const raw of redact(String(text), secrets).slice(0, max).split(/\r?\n/)) {
+		const line = esc(raw, max);
+		if (!line) { if (out.length && out.at(-1) !== "") out.push(""); continue; }
+		out.push(line.replace(/^([-+=])/, "\\$1").replace(/^(\d+)([.)])/, "$1\\$2"));
+	}
+	if (out.at(-1) === "") out.pop();
+	return out;
+}
+
 /** For plain-text comment bodies: neutralise image/link syntax, bare URLs and @mentions without adding backslashes everywhere. */
 export function defang(text: string): string {
 	return text
@@ -59,9 +71,10 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 	for (const q of s.questions.slice(0, MAX_QUESTIONS)) L.push(...question(q, e, hm));
 	if (s.questions.length > MAX_QUESTIONS) L.push(`_+${s.questions.length - MAX_QUESTIONS} more questions_`, "");
 
-	if (s.phase === "idle" && s.lastMessage) {
-		const t = s.lastMessage.text.length > 500 ? `…${s.lastMessage.text.slice(-499)}` : s.lastMessage.text;
-		L.push(`## 💬 Last agent message · ${hm(s.lastMessage.at)}`, "", `> ${e(t, 600)}`, "", "_The agent stopped here. If it asked something in the chat it is listed above as a question._", "");
+	if (s.lastMessage) {
+		L.push(`## 💬 Last message from the agent · ${hm(s.lastMessage.at)}`, "");
+		for (const l of escLines(s.lastMessage.text, secrets)) L.push(l ? `> ${l}` : ">");
+		L.push("", "_pi's tool approvals and dialogs are not visible here; something is due only if the message above or an open question says so._", "");
 	}
 
 	L.push("## 🤖 Agents", "");
