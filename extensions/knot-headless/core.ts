@@ -205,7 +205,7 @@ export function askQuestion(
 /** Keeps head and tail of a long message: the start says what happened, the end carries the question. */
 export const elide = (t: string): string => (t.length > 1400 ? `${t.slice(0, 600)}\n…\n${t.slice(-800)}` : t);
 
-// shortcut: keyword heuristic on the last paragraph; a miss still shows the message as "Last agent message", a false hit only opens a question the next chat message clears. Upgrade: let the summarizer model classify.
+// shortcut: keyword heuristic on the last paragraph; a miss still shows the message as "Last message from the agent", a false hit only opens a question the next chat message clears. Upgrade: let the summarizer model classify.
 const ASK_PHRASES = /\b(shall i|should i|want me to|do you want|would you like|let me know|confirm|approve|go-ahead|go ahead|your call|which (one|option|do you)|awaiting|waiting for (you|your))\b/i;
 export function looksLikeAsk(text: string): boolean {
 	const tail = text.trim().slice(-600);

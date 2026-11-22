@@ -350,5 +350,5 @@ test("last message: every phase, with time and footnote, redacted and escaped, l
 test("escLines: markdown line-start injections are neutralised, blank runs collapse, secrets are redacted before the cap", () => {
 	const lines = escLines("---\n===\n# x\n1. a\n2) b\n- c\n+ d\n    indented\n\n\n\nend", [], 1500);
 	assert.deepEqual(lines, ["\\---", "\\===", "\\# x", "1\\. a", "2\\) b", "\\- c", "\\+ d", "indented", "", "end"]);
-	assert.ok(!escLines(`${"x".repeat(1490)} tok-secret-value-123`, ["tok-secret-value-123"], 1500).join("").includes("secret"), "no fragment of a secret at the cap");
+	assert.ok(!escLines(`${"x".repeat(1490)} tok-secret-value-123`, ["tok-secret-value-123"], 1500).join("").includes("tok-sec"), "no fragment of a secret at the cap (redact first, then cut)");
 });

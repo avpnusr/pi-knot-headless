@@ -22,6 +22,7 @@ export class FakeKnot implements Knot {
 	failRename?: Error;
 	resolved: string[] = [];
 	resolveCalls = 0;
+	attempts: string[] = [];
 	failResolve?: "refused" | Error;
 	private seq = 0;
 	private chk() { this.calls++; if (this.failWith) throw this.failWith; }
@@ -32,6 +33,7 @@ export class FakeKnot implements Knot {
 	async resolveThread(_id: string, rootId: string) {
 		this.chk();
 		this.resolveCalls++;
+		this.attempts.push(rootId);
 		if (this.failResolve instanceof Error) throw this.failResolve;
 		if (this.failResolve === "refused") return "refused" as const;
 		this.resolved.push(rootId);

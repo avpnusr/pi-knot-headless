@@ -18,7 +18,7 @@ and what the model decided. The user's comments on the page flow back into the s
 ## Non-goals / anti-goals
 - No LLM in the render/poll loop. Optional LLM summarizer / nicer names (**approach C**) is deferred: **ask the user about C when v1 is done.**
 - **No checkboxes, no reading the page body.** The body is a write-only dashboard (user decision 2026-11-21).
-- No Knot tools in child subagents; no page rename/archive/cleanup, no crash registry, no timeline chips, no live token/elapsed counters, no `knot_status` tool (all cut for v1).
+- No Knot tools in child subagents; no page rename/archive (old comment threads are resolved since after 0.2.2), no crash registry, no timeline chips, no live token/elapsed counters, no `knot_status` tool (all cut for v1).
 - Anti-goals: leaking secrets to the page; any third party steering the session; re-running an old instruction.
 
 ## Constraints (verified)
@@ -67,7 +67,7 @@ Header (state, title, "started HH:MM", last heartbeat) → 🧠 head line (model
 - Identity dot per agent name, stable palette 🟣🔵🟢🟡🟠🟤 (hash of name); head 🧠. Status glyph separate, never a colored dot: ▶ working ✅ done ❌ failed ⏳ waiting for you 💤 idle ⏸ paused.
 - **Page states:** ▶ running, 💤 idle ("comment to give a new task"; polling continues), ✅ ended (only on `session_shutdown` with `reason` ≠ `reload`). Ended page: outcome line, duration, models used, subagent table (final), decisions, cost via RPC `cost` (once). Note "N background runs still running; results not delivered" if detached runs remain.
 - Writes: skip if markdown byte-identical to the last write; ≥15–30 s apart (trailing debounce); heartbeat line refreshed every 5 min; always `?mode=replace`.
-- **Escaping:** all dynamic text is single-line and escaped (`[ ] | # > * \`` backticks, links); cells truncated (~80 chars). Only allow-listed fields are rendered: agent name, model, state, bounded label/goal, model-authored question/options/why, session name. Never tool arguments/outputs.
+- **Escaping:** all dynamic text is escaped (single-line, except the *Last message from the agent* blockquote, which is escaped line by line by `escLines`, redacted before it is capped) (`[ ] | # > * \`` backticks, links); cells truncated (~80 chars). Only allow-listed fields are rendered: agent name, model, state, bounded label/goal, model-authored question/options/why, session name, and the newest assistant message (redacted, elided to ~1.4k chars). Never tool arguments/outputs.
 - **Redaction** on page, title and comments: exact values (≥8 chars) of the env vars in the AGENTS.md secret list; patterns `knot_…`, `Bearer \S+`, `sk-…`, `ghp_…`, `-----BEGIN`.
 
 ### Questions and decisions — `knot_ask`

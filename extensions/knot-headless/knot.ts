@@ -55,6 +55,7 @@ export function createKnot(o: {
 			}
 			if (once) { // best-effort calls: no retry, and no HTTP status turns into an auth error that would disable reporting
 				if (!res) throw new Error(`Knot ${method} ${path.split("?")[0]} failed: ${last}`);
+				await res.body?.cancel().catch(() => {}); // free the connection, only the status matters
 				return res;
 			}
 			if (res) {

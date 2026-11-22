@@ -218,10 +218,12 @@ export function create(pi: any, deps: Deps): Handle {
 	const refusedThreads = new Set<string>();
 	/** Hides finished threads (everything delivered, not an open question) beyond the newest 5. Best effort: nothing here may disable reporting or block the page write. */
 	async function cleanupThreads(all: Comment[]): Promise<void> {
-		if (st.selfOwned || stopped || st.phase === "ended" || !st.watermark || !st.pageId) return;
+		if (!active() || st.selfOwned || st.phase === "ended" || !st.watermark || !st.pageId) return;
 		for (const id of pickResolvable(all, st.watermark, st.questions.flatMap((q) => (q.threadId ? [q.threadId] : [])), refusedThreads)) {
 			try {
-				if ((await knot!.resolveThread(st.pageId!, id)) === "refused") { refusedThreads.add(id); break; }
+				const r = await knot!.resolveThread(st.pageId!, id);
+				if (r !== "ok") refusedThreads.add(id); // "gone" with resolved_at still unset would otherwise be retried every poll
+				if (r === "refused") break;
 			} catch (e) { log(e); break; }
 		}
 	}
@@ -266,7 +268,7 @@ export function create(pi: any, deps: Deps): Handle {
 				scheduleFleet();
 			}
 			await writePage(force);
-			if (listed) await cleanupThreads(listed);
+			if (listed) { try { await cleanupThreads(listed); } catch (e) { log(e); } }
 			if (offline) { offline = false; setStatus(undefined); }
 		} catch (e) {
 			knotFailed(e);
@@ -431,6 +433,7 @@ export function create(pi: any, deps: Deps): Handle {
 		if (!active()) return;
 		try {
 			await serial(async () => { await ensurePage(); await writePage(true); });
+			if (offline) { offline = false; setStatus(undefined); } // a successful page write proves Knot is back, even when no tick runs yet
 		} catch (e) { knotFailed(e); }
 	}
 
@@ -439,6 +442,7 @@ export function create(pi: any, deps: Deps): Handle {
 		launches = [];
 		routes.clear();
 		wfDirs.clear();
+		lastCreateTry = 0;
 		ctxRef = ctx;
 		stopped = false;
 		gen++;
@@ -562,7 +566,9 @@ export function create(pi: any, deps: Deps): Handle {
 		const asks = active() && !!text && !event?.aborted && st.questions.length === 0 && !st.selfOwned && looksLikeAsk(text);
 		if (asks) st = mirrorChatAsk(st, text, deps.now()).state;
 		if (active()) persist();
-		if (asks || (active() && st.pageId)) void launchTrigger().then(() => handle.tick(true)).catch(log); // the final message must not wait for the next tick
+		const retryCreate = active() && !st.pageId && deps.now() - lastCreateTry >= POLL_MS; // the first page creation failed: a short run must not leave the session without a page
+		if (retryCreate) lastCreateTry = deps.now();
+		if (asks || retryCreate || (active() && st.pageId)) void launchTrigger().then(() => handle.tick(true)).catch(log); // the final message must not wait for the next tick
 		void readCost().then(() => handle.tick()).catch(log);
 		void summarize().then(() => handle.tick()).catch(log); // independent of the cost read: pi-subagents may be absent
 	}));

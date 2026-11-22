@@ -1243,7 +1243,8 @@ test("cleanup: a refused or failing resolve stays local: reporting stays on, the
 		assert.ok(h.knot.replaces.length > before, "page written in the same tick");
 		assert.ok(!h.status.some((x) => x === "knot: disabled" || x === "knot: offline"), String(fail));
 		await h.handle.tick(true);
-		assert.equal(h.knot.resolveCalls, 2, "a refused id is skipped (next candidate tried), a thrown one is retried: one attempt per poll either way");
+		assert.equal(h.knot.resolveCalls, 2, "one attempt per poll");
+		assert.deepEqual(h.knot.attempts, fail === "refused" ? ["c1", "c2"] : ["c1", "c1"], "a refused id is skipped, a thrown one is retried");
 		assert.ok(h.handle.state().pageId);
 	}
 });
@@ -1270,6 +1271,7 @@ test("the last message is set at every assistant message, also while running; a 
 	const h = harness();
 	await h.start();
 	await h.ask(minorAsk);
+	await h.flush(); await h.flush();
 	await h.fire("agent_start");
 	const saved = h.entries.length, writes = h.knot.replaces.length;
 	for (let i = 1; i <= 5; i++) await say(h, `step ${i}`);
@@ -1278,6 +1280,7 @@ test("the last message is set at every assistant message, also while running; a 
 	assert.ok(h.knot.replaces.length - writes <= 1, "no write storm");
 	h.clock.t += 20_000;
 	await h.handle.tick(); // normal tick, not forced: the write gap has passed
+	assert.equal(h.knot.replaces.length - writes, 1, "the tick wrote exactly once");
 	const page = h.knot.replaces.at(-1)!;
 	assert.ok(page.includes("## 💬 Last message from the agent · 10:00") && page.includes("step 5") && page.includes("▶ running"));
 });
@@ -1341,4 +1344,46 @@ test("page creation on messages is retried at most once per poll interval while 
 	await h.flush(); await h.flush();
 	assert.equal(h.knot.created.length, 1);
 	assert.ok(h.knot.replaces.at(-1)!.includes("back"));
+});
+
+test("the first page creation failed: a short run still gets its page at settle, and the offline flag clears", async () => {
+	const h = harness();
+	await h.start();
+	h.knot.failWith = new Error("down");
+	await say(h, "working");
+	await h.flush(); await h.flush();
+	assert.equal(h.knot.created.length, 0);
+	assert.ok(h.status.includes("knot: offline"));
+	h.knot.failWith = undefined;
+	h.clock.t += 20_000;
+	await h.fire("agent_settled", { aborted: false });
+	await h.flush(); await h.flush();
+	assert.equal(h.knot.created.length, 1);
+	assert.equal(h.status.at(-1), undefined, "offline cleared");
+	assert.ok(h.knot.replaces.at(-1)!.includes("working"));
+});
+
+test("the last message is persisted at settle (not only when the page was created)", async () => {
+	const h = harness();
+	await h.start();
+	await say(h, "first");
+	await h.flush(); await h.flush();
+	await say(h, "second, the final one");
+	await h.fire("agent_settled", { aborted: false });
+	const h2 = harness({ entries: h.entries, knot: h.knot });
+	await h2.start("resume");
+	assert.equal(h2.handle.state().lastMessage?.text, "second, the final one");
+});
+
+test("cleanup never resolves a mirrored question's thread", async () => {
+	const h = harness();
+	await h.start();
+	await h.fire("agent_start");
+	await say(h, "Shall I push?");
+	await h.fire("agent_settled", { aborted: false });
+	await h.flush(); await h.flush();
+	const qThread = h.handle.state().questions[0].threadId!;
+	for (let i = 0; i < 8; i++) h.knot.comment(`note ${i}`);
+	await h.handle.tick(true);
+	assert.ok(h.knot.resolved.length >= 1 && !h.knot.resolved.includes(qThread));
 });
