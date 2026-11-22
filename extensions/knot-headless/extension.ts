@@ -463,7 +463,7 @@ export function create(pi: any, deps: Deps): Handle {
 			if (saved?.data?.version === 1) {
 				const d = saved.data;
 				const counts = d.counts ?? (d.decisions ?? []).reduce((c: any, x: any) => (x.by === "system" ? c : { ...c, [x.by]: (c[x.by] ?? 0) + 1 }), { model: 0, user: 0, timeout: 0 });
-				st = { ...d, counts, phase: "idle", agents: [], orchestrators: [], agentsDropped: (d.agentsDropped ?? 0) + (d.agents?.length ?? 0), headModel: head || d.headModel, backgroundRunning: 0, mutated: false, decidedThisRun: 0 };
+				st = { ...d, counts, phase: "idle", terminalPrompt: undefined, agents: [], orchestrators: [], agentsDropped: (d.agentsDropped ?? 0) + (d.agents?.length ?? 0), headModel: head || d.headModel, backgroundRunning: 0, mutated: false, decidedThisRun: 0 };
 				if (newest?.data?.version === 1 && newest.data.pageId === st.pageId && newest.data.watermark) st = { ...st, watermark: newest.data.watermark, ownIds: newest.data.ownIds ?? [] };
 				if (st.pageId !== undefined && !UUID.test(st.pageId)) {
 					st = { ...st, pageId: undefined, pageCreator: undefined, selfOwned: undefined, watermark: undefined, ownIds: [], questions: st.questions.map((q) => ({ ...q, threadId: undefined })) };
@@ -534,6 +534,17 @@ export function create(pi: any, deps: Deps): Handle {
 	pi.on("agent_start", guard(() => {
 		lastText = "";
 		st = { ...st, phase: "running", headActivity: "working" };
+	}));
+
+	// pi dialogs (confirm/select/input/...) only answer in the terminal: the page says that something waits there
+	pi.on("ui_prompt_start", guard((event: any) => {
+		st = { ...st, terminalPrompt: { kind: String(event?.kind ?? "prompt").slice(0, 20), title: typeof event?.title === "string" ? clean(event.title).slice(0, 200) : undefined, at: deps.now() } };
+		if (active()) void launchTrigger().then(() => handle.tick(true)).catch(log);
+	}));
+	pi.on("ui_prompt_end", guard(() => {
+		if (!st.terminalPrompt) return;
+		st = { ...st, terminalPrompt: undefined };
+		if (active() && st.pageId) void handle.tick(true).catch(log);
 	}));
 
 	pi.on("tool_execution_start", guard((event: any) => {

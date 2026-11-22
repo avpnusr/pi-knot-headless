@@ -51,7 +51,9 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 	const e = (t: string, max = 80) => esc(redact(t, secrets), max);
 	const hm = (ts: number) =>
 		new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: o.tz }).format(ts);
-	const waiting = s.questions.length ? `⏳ waiting on you: ${s.questions.map((q) => q.id).join(", ")}` : "";
+	const tp = s.phase === "ended" ? undefined : s.terminalPrompt;
+	const waitList = [...s.questions.map((q) => q.id), ...(tp ? [`the terminal (${e(tp.title || tp.kind, 60)})`] : [])];
+	const waiting = waitList.length ? `⏳ waiting on you: ${waitList.join(", ")}` : "";
 	const icon = s.phase === "ended" ? "✅" : s.phase === "running" ? "⚙️" : waiting ? "⏳" : "💤";
 	const label = s.phase === "running" ? `⚙️ running${waiting ? ` · ${waiting}` : ""}` : s.phase === "idle" ? waiting || "💤 idle — no open question; comment to give a new task" : "✅ ended";
 	const L: string[] = [];
@@ -63,14 +65,15 @@ export function render(s: State, o: { now: number; tz?: string; secrets?: string
 	L.push("## 🧠 Head", "", `${code(redact(s.headModel, secrets))}${s.headActivity ? ` — ${e(s.headActivity)}` : ""}`, "");
 
 	L.push("## ❓ Needs you", "");
-	if (s.questions.length === 0) L.push(s.phase === "ended" ? "_session ended, nothing open_" : `_no open question as of ${hm(s.lastBeat)}. The page refreshes at least every 5 minutes: an older heartbeat means this page is stale and its silence means nothing._`, "");
+	if (tp) L.push(`### ⏳ In the terminal · ${e(tp.kind, 20)} · since ${hm(tp.at)}`, "", `**${e(tp.title || tp.kind, 160)}**`, "", "_pi is waiting for an answer in its terminal. This can only be answered in the pi terminal, not from Knot._", "");
+	if (s.questions.length === 0 && !tp) L.push(s.phase === "ended" ? "_session ended, nothing open_" : `_no open question as of ${hm(s.lastBeat)}. The page refreshes at least every 5 minutes: an older heartbeat means this page is stale and its silence means nothing._`, "");
 	for (const q of s.questions.slice(0, MAX_QUESTIONS)) L.push(...question(q, e, hm));
 	if (s.questions.length > MAX_QUESTIONS) L.push(`_+${s.questions.length - MAX_QUESTIONS} more questions_`, "");
 
 	if (s.lastMessage) {
 		L.push(`## 💬 Last message from the agent · ${hm(s.lastMessage.at)}`, "");
 		L.push(...codeBlock(s.lastMessage.text, secrets));
-		L.push("", "_pi's tool approvals and dialogs are not visible here; something is due only if the message above or an open question says so._", "");
+		L.push("", "_Dialogs that wait for you in the pi terminal show up under Needs you. Beyond that, something is due only if the message above or an open question says so._", "");
 	}
 
 	L.push("## 🤖 Agents", "");

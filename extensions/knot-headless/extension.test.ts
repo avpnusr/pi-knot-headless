@@ -1406,3 +1406,37 @@ test("the pi session id and resume command are on the page; the id of the open s
 	await h2.start("resume", h2.ctx({ sessionManager: { getBranch: () => h.entries, getEntries: () => h.entries, getSessionName: () => undefined, getSessionId: () => "0198b2c4-bbbb-7000-8000-000000000010" } }));
 	assert.equal(h2.handle.state().sessionId, "0198b2c4-bbbb-7000-8000-000000000010", "the id of the session that is open now, not the saved one");
 });
+
+test("a pi prompt waiting in the terminal is on the page while it is open, and gone when it closes", async () => {
+	const h = harness();
+	await h.start();
+	await h.ask(minorAsk);
+	await h.handle.tick(true);
+	await h.fire("ui_prompt_start", { reason: "ui_prompt", kind: "confirm", title: "Allow rm -rf?" });
+	await h.flush(); await h.flush();
+	assert.ok(h.knot.replaces.at(-1)!.includes("waiting on you: the terminal (Allow rm -rf?)"), "written at once, not on the next tick");
+	await h.fire("ui_prompt_end", { reason: "ui_prompt" });
+	await h.flush(); await h.flush();
+	const page = h.knot.replaces.at(-1)!;
+	assert.ok(!page.includes("In the terminal") && page.includes("no open question"));
+	assert.equal(h.handle.state().terminalPrompt, undefined);
+});
+
+test("a terminal prompt creates the page when there is none; inactive modes make no Knot call; a resume never shows a stale prompt", async () => {
+	const h = harness();
+	await h.start();
+	await h.fire("ui_prompt_start", { reason: "ui_prompt", kind: "input" });
+	await h.flush(); await h.flush();
+	assert.equal(h.knot.created.length, 1);
+	assert.ok(h.knot.replaces.at(-1)!.includes("waiting on you: the terminal (input)"));
+	await h.fire("agent_settled", { aborted: false }); // persists the state while the prompt is still open
+	const h2 = harness({ entries: h.entries, knot: h.knot });
+	await h2.start("resume");
+	assert.equal(h2.handle.state().terminalPrompt, undefined);
+
+	const p = harness();
+	await p.start("startup", p.ctx({ mode: "print" }));
+	await p.fire("ui_prompt_start", { reason: "ui_prompt", kind: "confirm", title: "x" });
+	await p.flush();
+	assert.equal(p.knot.calls, 0);
+});

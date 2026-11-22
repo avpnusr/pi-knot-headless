@@ -340,7 +340,7 @@ test("last message: a fenced code block in every phase, with time and footnote, 
 		const out = render({ ...base(), phase, lastMessage: lm }, O);
 		assert.ok(out.includes("## 💬 Last message from the agent · 14:02\n\n```\nDone: all green.\n\n- next: key [redacted] | # head\n```\n"), phase);
 		assert.ok(!out.includes("sk-abcdefghijklmnop"), phase);
-		assert.ok(out.includes("tool approvals and dialogs are not visible here"), phase);
+		assert.ok(out.includes("Dialogs that wait for you in the pi terminal show up under Needs you"), phase);
 	}
 	assert.ok(!render(base(), O).includes("Last message from the agent"), "nothing said yet: no section");
 });
@@ -359,4 +359,22 @@ test("resume line: the pi session id with the resume command, in every phase; od
 	}
 	assert.ok(!render({ ...base(), sessionId: "x`; rm -rf /" }, O).includes("pi --session"));
 	assert.ok(!render(base(), O).includes("pi --session"));
+});
+
+test("terminal prompt: header and Needs you say pi waits in the terminal; title escaped and redacted; not on an ended page", () => {
+	const tp = { kind: "confirm", title: "Allow `rm -rf` | key sk-abcdefghijklmnop1234?", at: O.now - 120_000 };
+	for (const phase of ["running", "idle"] as const) {
+		const out = render({ ...base(), phase, terminalPrompt: tp }, O);
+		assert.ok(out.includes("waiting on you: the terminal (Allow "), phase);
+		assert.ok(out.includes("### ⏳ In the terminal · confirm · since 14:28"), phase);
+		assert.ok(out.includes("only be answered in the pi terminal"), phase);
+		assert.ok(!out.includes("no open question"), phase);
+		assert.ok(!out.includes("sk-abcdefghijklmnop") && out.includes("Allow \\`rm -rf\\` \\|"), "redacted and escaped");
+	}
+	const noTitle = render({ ...base(), terminalPrompt: { kind: "select", at: O.now } }, O);
+	assert.ok(noTitle.includes("waiting on you: the terminal (select)"));
+	const s = askQuestion({ ...base(), terminalPrompt: tp }, { question: "Q?", severity: "critical" }, O.now - 60_000, 0).state;
+	assert.ok(render(s, O).includes("waiting on you: Q1, the terminal ("), "questions and the terminal prompt together");
+	const ended = render({ ...base(), phase: "ended", terminalPrompt: tp }, O);
+	assert.ok(!ended.includes("In the terminal") && !ended.includes("waiting on you"));
 });

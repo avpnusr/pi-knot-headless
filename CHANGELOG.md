@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Dialogs waiting in the terminal are on the page.** While a pi dialog (confirm, select, input, editor, custom screen) is open, the header says `waiting on you: the terminal (<title>)` and *Needs you* lists it with its kind and since when; it disappears when the dialog closes (pi's `ui_prompt_start`/`ui_prompt_end` events). It is written to the page at once, creates the page if there is none, and is never restored after a restart. It can only be answered in the pi terminal. The footnote under *Last message from the agent* is updated accordingly.
+
 - **Less noise under *Decisions reported*.** The `⚠ run ended with no logged decisions` note now appears once per session instead of after nearly every run (its once-only flag was reset immediately), and a question copied from the chat no longer adds its own `mirrored as Qn` line (the question itself is the record).
 - **Questions copied from the chat quote cleanly.** The quote is the last paragraph cut to whole sentences (a single overlong sentence is cut at a word boundary with an ellipsis), no longer the last 180 characters, which started mid-sentence.
 
