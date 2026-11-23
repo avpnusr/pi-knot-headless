@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { newState, askQuestion, newComments, mapComment, composeDelivery, timeoutMessage, type State } from "./core.ts";
+import { newState, askQuestion, newComments, mapComment, composeDelivery, timeoutMessage, isKnotUserMessage, type State } from "./core.ts";
 import type { Comment } from "./knot.ts";
 
 const OWNER = "owner-1";
@@ -125,4 +125,33 @@ test("created_at precision differences do not lose or repeat comments", () => {
 
 test("a null comment body does not throw", () => {
 	assert.equal(mapComment(c("c1", { body: null as unknown as string }), withQ(0), OWNER).kind, "general");
+});
+
+test("stop: only the exact word as a top-level owner comment; thread replies stay answers, other text stays a message", () => {
+	const s = withQ(1);
+	for (const body of ["stop", "  Stop ", "STOP!", "stop."]) assert.deepEqual(mapComment(c("c1", { body }), s, OWNER), { kind: "stop" }, body);
+	assert.equal(mapComment(c("c1", { body: "stop", author_id: "someone" }), s, OWNER).kind, "ignore", "foreign author");
+	assert.equal(mapComment(c("c1", { body: "stop", parent_id: "th1", thread_id: "th1" }), s, OWNER).kind, "answer", "a reply in a question thread is that answer");
+	assert.equal(mapComment(c("c1", { body: "stop", parent_id: "x9", thread_id: "x9" }), s, OWNER).kind, "general", "a reply in some other thread is no command");
+	for (const body of ["stop the build", "please stop", "Q1 stop", "stopp", "don't stop"]) assert.notEqual(mapComment(c("c1", { body }), s, OWNER).kind, "stop", body);
+});
+
+test("next: marks a follow-up, case-insensitive, never interpreted as an answer; an empty or threaded next: is not one", () => {
+	const s = withQ(1);
+	assert.deepEqual(mapComment(c("c1", { body: "next: write the docs" }), s, OWNER), { kind: "general", text: "write the docs", followUp: true });
+	assert.deepEqual(mapComment(c("c1", { body: "  NEXT :  a\nb " }), s, OWNER), { kind: "general", text: "a\nb", followUp: true });
+	const empty = mapComment(c("c1", { body: "next:" }), s, OWNER);
+	assert.equal(empty.kind === "general" && empty.followUp, undefined);
+	assert.equal(mapComment(c("c1", { body: "next: 2", parent_id: "th1", thread_id: "th1" }), s, OWNER).kind, "answer");
+});
+
+test("composeDelivery: a follow-up says so; isKnotUserMessage covers answers and messages, not timeout notices", () => {
+	const s = withQ(1);
+	const t = composeDelivery([{ mapped: { kind: "general", text: "write the docs", followUp: true }, s }]);
+	assert.match(t, /^\[Knot message from user\] "write the docs" \(queued by the user as a follow-up: start it only after your current task is done\)$/);
+	assert.ok(!t.includes("Open questions"), "no interpretation noise on a follow-up");
+	assert.equal(isKnotUserMessage(t), true);
+	assert.equal(isKnotUserMessage('Knot answer to Q1: "x" — the user answered: "y"'), true);
+	assert.equal(isKnotUserMessage('Q1 "x" unanswered on Knot after 2 h; proceed with: "y"'), false);
+	assert.equal(isKnotUserMessage("hello"), false);
 });

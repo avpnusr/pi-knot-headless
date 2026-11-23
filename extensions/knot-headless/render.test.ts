@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { newState, askQuestion, logDecision, assignDots, type State, type AgentRow, type Orchestrator } from "./core.ts";
-import { codeBlock, render, esc, defang } from "./render.ts";
+import { codeBlock, render, esc, defang, stateIcon } from "./render.ts";
 
 const O = { now: Date.UTC(2026, 10, 21, 14, 30), tz: "UTC" };
 const base = (): State => newState(Date.UTC(2026, 10, 21, 14, 2), "demo · fix the build", "claude-opus-5-5");
@@ -390,4 +390,44 @@ test("the delivery warning shows in the header and as a line, only while deliver
 	assert.ok(out.includes("⚠ delivery to the session is failing (3 attempts)"));
 	assert.ok(!render(base(), O).includes("delivery to the session"));
 	assert.ok(!render({ ...base(), phase: "ended", deliveryFailures: 3 }, O).includes("delivery to the session"));
+});
+
+test("stateIcon: ended > waiting (a question or a terminal prompt) > running > idle", () => {
+	const q = askQuestion(base(), { question: "Q?", severity: "critical" }, O.now, 0).state;
+	assert.equal(stateIcon({ ...base(), phase: "ended" }), "✅");
+	assert.equal(stateIcon({ ...q, phase: "ended" }), "✅");
+	assert.equal(stateIcon({ ...q, phase: "running" }), "⏳");
+	assert.equal(stateIcon({ ...base(), phase: "running", terminalPrompt: { kind: "confirm", at: 1 } }), "⏳");
+	assert.equal(stateIcon({ ...base(), phase: "running" }), "⚙️");
+	assert.equal(stateIcon({ ...base(), phase: "idle" }), "💤");
+});
+
+test("last activity: a time on the head line while the session is not ended", () => {
+	const at = O.now - 180_000;
+	for (const phase of ["running", "idle"] as const) assert.ok(render({ ...base(), phase, lastActivity: at }, O).includes("last activity 14:27"), phase);
+	assert.ok(!render({ ...base(), phase: "ended", lastActivity: at }, O).includes("last activity"));
+	assert.ok(!render(base(), O).includes("last activity"));
+});
+
+test("delivery line: what you last sent from Knot, sent or picked up; escaped, redacted, hidden once ended", () => {
+	const m = { at: O.now - 120_000, text: "do `rm` | key sk-abcdefghijklmnop1234 and more", state: "sent" as const };
+	const sent = render({ ...base(), phase: "running", knotMsg: m }, O);
+	assert.ok(sent.includes("📨 Your last comment · 14:28 · “do \\`rm\\` \\| key \\[redacted\\] and more” · ⏳ sent to the session, the agent has not picked it up yet"), sent);
+	assert.ok(!sent.includes("sk-abcdefghijklmnop"));
+	const picked = render({ ...base(), phase: "running", knotMsg: { ...m, state: "picked up", pickedAt: O.now - 60_000 } }, O);
+	assert.ok(picked.includes("✅ picked up by the agent at 14:29"));
+	assert.ok(!render({ ...base(), phase: "ended", knotMsg: m }, O).includes("Your last comment"));
+	assert.ok(!render(base(), O).includes("Your last comment"));
+	assert.ok(render({ ...base(), knotMsg: { ...m, text: "x".repeat(300) } }, O).includes("…”"), "long text is cut");
+});
+
+test("footer: a live page explains stop and next:, an ended page says nobody listens and how to resume", () => {
+	const live = render({ ...base(), phase: "idle" }, O);
+	assert.ok(live.includes("Reply **in the question's comment thread**"));
+	assert.ok(live.includes("comment `stop` to interrupt the agent") && live.includes("start a comment with `next:` to queue a task"));
+	const ended = render({ ...base(), phase: "ended", sessionId: "0198b2c4-aaaa-7000-8000-00000000000f" }, O);
+	assert.ok(!ended.includes("Reply **in the question's comment thread**"));
+	assert.ok(ended.includes("This session has ended and no one reads comments any more") && ended.includes("`pi --session 0198b2c4-aaaa-7000-8000-00000000000f`"));
+	const noId = render({ ...base(), phase: "ended" }, O);
+	assert.ok(noId.includes("This session has ended") && !noId.includes("pi --session"));
 });

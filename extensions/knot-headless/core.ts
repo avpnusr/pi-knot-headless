@@ -118,6 +118,8 @@ export interface State {
 	agentsDropped?: number; // rows pushed out of the capped agents list
 	cost?: Cost;
 	nestedCost?: NestedCost;
+	lastActivity?: number; // newest tool call / message / run start (ms): tells a stuck agent from a busy one; not the heartbeat
+	knotMsg?: { at: number; text: string; state: "sent" | "picked up"; pickedAt?: number }; // the newest comment delivered to the session
 	deliveryFailures?: number; // consecutive failed sends to the session, shown on the page; never restored after a restart
 	terminalPrompt?: { kind: string; title?: string; at: number }; // a pi dialog is open in the terminal (ui_prompt_start/end); never restored after a restart
 	lastMessage?: { text: string; at: number }; // newest assistant text, redacted and elided; set at message_end in every phase so Knot alone shows what the CLI shows
@@ -256,7 +258,8 @@ export function expireQuestions(s: State, now: number): { state: State; expired:
 
 export type Mapped =
 	| { kind: "answer"; qid: string; option?: number; text: string }
-	| { kind: "general"; text: string; interpretedQ?: string }
+	| { kind: "general"; text: string; interpretedQ?: string; followUp?: boolean }
+	| { kind: "stop" }
 	| { kind: "ignore" };
 
 const MAX_COMMENT = 4096;
@@ -300,6 +303,8 @@ export function pickResolvable(all: Comment[], wm: { id: string; createdAt: stri
 export function mapComment(c: Comment, s: State, owner: string): Mapped {
 	if (!c.author_id || c.author_id !== owner) return { kind: "ignore" };
 	const body = String(c.body ?? "").slice(0, MAX_COMMENT);
+	// the one command: exactly the word, top level only (a reply in a question thread is that answer). Everything else stays plain text.
+	if (!c.parent_id && /^\s*stop\s*[.!]*\s*$/i.test(body)) return { kind: "stop" };
 
 	const threaded = c.parent_id ? s.questions.find((q) => q.threadId && (q.threadId === c.thread_id || q.threadId === c.parent_id)) : undefined;
 	if (threaded) {
@@ -311,6 +316,8 @@ export function mapComment(c: Comment, s: State, owner: string): Mapped {
 		const q = s.questions.find((x) => x.id === `Q${m[1]}`);
 		if (q) return withOption(q, m[2] ? Number(m[2]) : undefined, m[3]);
 	}
+	const next = /^\s*next\s*:\s*(\S.*)$/is.exec(body); // queue for after the current task; explicit, so never read as an answer
+	if (next) return { kind: "general", text: next[1].trim(), followUp: true };
 	return { kind: "general", text: body, interpretedQ: !c.parent_id && s.questions.length === 1 ? s.questions[0].id : undefined };
 }
 
@@ -325,7 +332,7 @@ const quote = (t: string) => JSON.stringify(t);
 export function composeDelivery(items: { mapped: Mapped; s: State }[]): string {
 	const parts: string[] = [];
 	for (const { mapped: m, s } of items) {
-		if (m.kind === "ignore") continue;
+		if (m.kind === "ignore" || m.kind === "stop") continue;
 		if (m.kind === "answer") {
 			const q = s.questions.find((x) => x.id === m.qid);
 			if (!q) continue;
@@ -336,6 +343,7 @@ export function composeDelivery(items: { mapped: Mapped; s: State }[]): string {
 			parts.push(`Knot answer to ${q.id}: ${quote(q.text)}${opts}${rec}${why} — the user answered: ${quote(m.text)}`);
 		} else {
 			let t = `[Knot message from user] ${quote(m.text)}`;
+			if (m.followUp) { parts.push(`${t} (queued by the user as a follow-up: start it only after your current task is done)`); continue; }
 			const q = m.interpretedQ ? s.questions.find((x) => x.id === m.interpretedQ) : undefined;
 			if (q) t += ` (interpreted as an answer to ${q.id} ${quote(q.text)}; push back if it was not meant that way)`;
 			else if (s.questions.length >= 1) t += ` (Open questions, not answered by this message: ${s.questions.map((x) => `${x.id} ${quote(x.text)}`).join("; ")})`;
@@ -344,6 +352,9 @@ export function composeDelivery(items: { mapped: Mapped; s: State }[]): string {
 	}
 	return parts.join("\n\n");
 }
+
+/** True for a delivered Knot answer or message (not a timeout notice): the moment the agent actually receives it. */
+export const isKnotUserMessage = (text: string): boolean => /^(Knot answer to Q\d+: |\[Knot message from user\] )/s.test(text.trimStart());
 
 /** True for the texts this extension steers into the session; any other user message means the user is talking in the chat. */
 export const isOwnDelivery = (text: string): boolean => /^(Knot answer to Q\d+: |\[Knot message from user\] |Q\d+ ".*?" unanswered on Knot after )/s.test(text.trimStart());

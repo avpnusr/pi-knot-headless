@@ -65,13 +65,13 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 	const listeners = new Map<string, Array<(p: any) => void>>();
 	const h = {
 		tools: new Map<string, any>(), commands: new Map<string, any>(), entries, sent: [] as { text: string; opts: any }[],
-		notes: [] as string[], status: [] as (string | undefined)[], settings, sendThrows: false, sendAttempts: 0, rpcSilent: false, throwOnAppend: false,
+		notes: [] as string[], status: [] as (string | undefined)[], settings, sendThrows: false, failFollowUp: false, idle: true, aborts: 0, sendAttempts: 0, rpcSilent: false, throwOnAppend: false,
 		fleet: { entries: [] as any[], totalActive: 0 } as any, snapshot: undefined as any, cost: undefined as any,
 		llm: { calls: [] as any[], text: "Two agents are fixing the build.", usage: { totalTokens: 100, cost: { total: 0.001 } }, throws: undefined as Error | undefined, models: [] as string[] },
 		pi: undefined as any,
 		listenerCount: (prefix: string) => [...listeners.entries()].filter(([k, v]) => k.startsWith(prefix) && v.length > 0).length,
 		ctx: (over: any = {}) => ({
-			mode: "tui", model: { provider: "claude-bridge", id: "opus" }, cwd: "/work/demo",
+			mode: "tui", isIdle: () => h.idle, abort: () => { h.aborts++; }, model: { provider: "claude-bridge", id: "opus" }, cwd: "/work/demo",
 			sessionManager: { getBranch: () => entries, getSessionName: () => undefined, getSessionId: () => SESSION_ID },
 			modelRegistry: {
 				find: (p: string, id: string) => (h.llm.models.includes(`${p}/${id}`) ? { provider: p, id } : undefined),
@@ -91,7 +91,7 @@ export function fakePi(entries: any[] = [], settings: any = {}) {
 		registerTool: (t: any) => h.tools.set(t.name, t),
 		registerCommand: (n: string, c: any) => h.commands.set(n, c),
 		appendEntry: (type: string, data: any) => { if (h.throwOnAppend) throw new Error("disk full"); entries.push({ type: "custom", customType: type, data: structuredClone(data) }); },
-		sendUserMessage: (text: string, opts: any) => { h.sendAttempts++; if (h.sendThrows) throw new Error("rejected"); h.sent.push({ text, opts }); },
+		sendUserMessage: (text: string, opts: any) => { h.sendAttempts++; if (h.sendThrows || (h.failFollowUp && opts?.deliverAs === "followUp")) throw new Error("rejected"); h.sent.push({ text, opts }); },
 		getSettings: () => h.settings,
 		events: {
 			on: (ev: string, fn: any) => { (listeners.get(ev) ?? listeners.set(ev, []).get(ev)!).push(fn); return () => { listeners.set(ev, (listeners.get(ev) ?? []).filter((x) => x !== fn)); }; },

@@ -4,13 +4,13 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
 	isInert, assignDots, nestedByAgent, parseCost, redact, secretValuesFromEnv, newState, askQuestion, answerQuestion, expireQuestions, logDecision,
-	newComments, mapComment, composeDelivery, timeoutMessage, looksLikeAsk, mirrorChatAsk, isOwnDelivery, pickResolvable, elide, type State, type AgentRow, type Severity,
+	newComments, mapComment, composeDelivery, timeoutMessage, looksLikeAsk, mirrorChatAsk, isOwnDelivery, isKnotUserMessage, pickResolvable, elide, type State, type AgentRow, type Severity,
 } from "./core.ts";
 import { openAsyncDir, readStepTexts } from "./steptexts.ts";
 import { openRoute, pollRoute, routeCounts, nestedUsage, type Route } from "./nestedroute.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { createKnot, tokenVarFor, KnotAuthError, KnotResponseError, type Knot, type Comment } from "./knot.ts";
-import { render, defang } from "./render.ts";
+import { render, defang, stateIcon } from "./render.ts";
 import { buildSummaryInput, parseSummaryReply, gate, SYSTEM_PROMPT, TITLE_PROMPT } from "./summary.ts";
 import { orchestratorsFromSnapshot, claimWorkerEntries, applyOrchestrators, launchFromArgs, addLaunch, takeDirectTask, type Launch } from "./orchestrators.ts";
 
@@ -145,11 +145,22 @@ export function create(pi: any, deps: Deps): Handle {
 	}
 
 	// ---- Knot plumbing --------------------------------------------------------
+	// the Knot title carries the state icon (visible in Knot's page tree without opening the page); renamed once per change, best effort
+	let lastTitle: string | undefined;
+	const titleFor = () => `${stateIcon(st)} ${clean(st.title)}`;
+	async function syncTitle(): Promise<void> {
+		const t = titleFor();
+		if (!st.pageId || t === lastTitle) return;
+		lastTitle = t; // set first: a failing rename waits for the next state change instead of repeating every write
+		try { await knot!.rename(st.pageId, t); } catch (e) { log(e); }
+	}
+
 	async function ensurePage(): Promise<void> {
 		if (st.pageId) return;
 		if (!st.title) st = { ...st, title: makeTitle() };
 		if (!st.tokenProvider) st = { ...st, tokenProvider: provider() };
-		const page = await knot!.createPage(clean(st.title), cfg!.parentPageId);
+		lastTitle = titleFor();
+		const page = await knot!.createPage(lastTitle, cfg!.parentPageId);
 		const selfOwned = !!page.createdBy && page.createdBy === cfg!.ownerUid;
 		// a brand-new page has no history: everything posted from now on is new
 		st = { ...st, pageId: page.id, pageCreator: page.createdBy, watermark: { id: "", createdAt: "" }, ...(selfOwned ? { selfOwned: true } : {}) };
@@ -178,10 +189,10 @@ export function create(pi: any, deps: Deps): Handle {
 		persist();
 	}
 
-	async function deliver(text: string): Promise<boolean> {
+	async function deliver(text: string, mode: "steer" | "followUp" = "steer"): Promise<boolean> {
 		if (!text) return true;
 		try {
-			await Promise.resolve(pi.sendUserMessage(text, { deliverAs: "steer" }));
+			await Promise.resolve(pi.sendUserMessage(text, { deliverAs: mode }));
 			if (deliverFails) {
 				deliverFails = 0; nextDeliverAt = 0;
 				st = { ...st, deliveryFailures: undefined };
@@ -198,6 +209,17 @@ export function create(pi: any, deps: Deps): Handle {
 		}
 	}
 
+	/** `stop` from Knot: abort the running agent. Only while something runs; logged either way. Never throws. */
+	function stopRun(): boolean {
+		let text = "⏹ stopped from Knot";
+		try {
+			if (ctxRef?.isIdle?.() === false) ctxRef.abort();
+			else text = "⏹ stop from Knot: nothing was running";
+		} catch (e) { log(e); text = "⏹ stop from Knot failed: the session could not be aborted"; }
+		st = logDecision(st, { ts: deps.now(), by: "system", text });
+		return true;
+	}
+
 	async function pollComments(): Promise<Comment[] | undefined> {
 		if (st.selfOwned) return;
 		await ensureBaseline();
@@ -206,24 +228,45 @@ export function create(pi: any, deps: Deps): Handle {
 		const fresh = newComments(all, st.watermark);
 		if (fresh.length === 0) return all;
 		if (deps.now() < nextDeliverAt) return all; // the last send failed: wait for the backoff, comments stay undelivered (and unresolved)
-		const prev = st;
-		const last = fresh.at(-1)!;
-		let run: State = { ...st, watermark: { id: last.id, createdAt: last.created_at } };
-		const items: Parameters<typeof composeDelivery>[0] = [];
-		for (const c of fresh) {
-			if ((run.ownIds ?? []).includes(c.id)) continue;
-			let mapped = mapComment(c, run, cfg!.ownerUid);
-			if (mapped.kind === "ignore") continue;
-			if (mapped.kind === "answer" && !run.questions.some((q) => q.id === mapped.qid)) mapped = { kind: "general", text: mapped.text };
-			items.push({ mapped, s: run });
-			if (mapped.kind === "answer") run = answerQuestion(run, mapped.qid, mapped.text, "user", deps.now());
-		}
-		st = run;
-		if (items.length === 0) return all; // only foreign/own comments: advance in memory, no need to grow the session file
-		persist();
-		if (!(await deliver(composeDelivery(items)))) {
-			st = { ...prev, deliveryFailures: st.deliveryFailures };
+		// Comments are handled in order. One send per kind of comment (message / follow-up / stop): a batch ends where the kind changes and the
+		// loop goes on, so a failed send rolls back only its own batch (exactly-once) and `stop` never waits behind a long message.
+		let rest = fresh;
+		while (rest.length > 0) {
+			const prev = st;
+			let run: State = st;
+			const items: Parameters<typeof composeDelivery>[0] = [];
+			let kind: "steer" | "followUp" | "stop" | undefined;
+			let last = rest[0];
+			let i = 0;
+			for (; i < rest.length; i++) {
+				const c = rest[i];
+				if ((run.ownIds ?? []).includes(c.id)) { last = c; continue; }
+				let mapped = mapComment(c, run, cfg!.ownerUid);
+				if (mapped.kind === "ignore") { last = c; continue; }
+				if (mapped.kind === "answer" && !run.questions.some((q) => q.id === mapped.qid)) mapped = { kind: "general", text: mapped.text };
+				const k = mapped.kind === "stop" ? "stop" : mapped.kind === "general" && mapped.followUp ? "followUp" : "steer";
+				if (kind && k !== kind) break;
+				kind = k;
+				last = c;
+				if (mapped.kind === "stop") continue;
+				items.push({ mapped, s: run });
+				if (mapped.kind === "answer") run = answerQuestion(run, mapped.qid, mapped.text, "user", deps.now());
+			}
+			rest = rest.slice(i);
+			st = { ...run, watermark: { id: last.id, createdAt: last.created_at } };
+			if (!kind) continue; // only foreign/own comments: advance in memory, no need to grow the session file
 			persist();
+			const ok = kind === "stop" ? stopRun() : await deliver(composeDelivery(items), kind);
+			if (!ok) {
+				st = { ...prev, deliveryFailures: st.deliveryFailures };
+				persist();
+				break;
+			}
+			if (kind !== "stop") {
+				const m = items.at(-1)!.mapped;
+				const text = m.kind === "answer" ? `${m.qid}: ${m.text}` : m.kind === "general" ? m.text : "";
+				st = { ...st, knotMsg: { at: deps.now(), text: clean(text).slice(0, 300), state: "sent" } };
+			}
 		}
 		return all;
 	}
@@ -265,6 +308,7 @@ export function create(pi: any, deps: Deps): Handle {
 		await knot!.replace(st.pageId!, md);
 		lastMd = md;
 		lastWrite = now;
+		await syncTitle();
 	}
 
 	async function tickInner(force: boolean): Promise<void> {
@@ -409,7 +453,8 @@ export function create(pi: any, deps: Deps): Handle {
 			if (r.title && st.pageId) {
 				const folder = basename(ctxRef?.cwd ?? "") || "session";
 				const title = `${folder} · ${r.title}`;
-				try { await knot!.rename(st.pageId, clean(title)); renamed = true; if (g === gen && !stopped) st = { ...st, title: clean(title) }; } catch (e) { log(e); renamed = true; }
+				renamed = true;
+				if (g === gen && !stopped) st = { ...st, title: clean(title) }; // the next page write renames the Knot page (syncTitle)
 			}
 			if (g !== gen || stopped) return;
 			// fingerprint after the title decision, so applying the title does not cause one more identical call
@@ -467,7 +512,7 @@ export function create(pi: any, deps: Deps): Handle {
 		const r = loadConfig(deps.settings(), deps.env);
 		if (r.ok) { cfg = r.cfg; cfgReason = ""; knot = deps.makeKnot(r.cfg, () => { const v = tokenVarFor(provider(), r.cfg.tokenEnv); return v ? deps.env[v] : undefined; }); }
 		else { cfg = undefined; cfgReason = r.reason; knot = undefined; }
-		disabled = false; lastMd = ""; lastWrite = 0; lastPoll = 0;
+		disabled = false; lastMd = ""; lastWrite = 0; lastPoll = 0; lastTitle = undefined; // one rename per start also repairs a stale icon after a crash
 		const now = deps.now();
 		const head = ctx.model?.id ?? "";
 		st = newState(now, "", head);
@@ -528,8 +573,11 @@ export function create(pi: any, deps: Deps): Handle {
 	}));
 
 	const textOf = (m: any): string => (typeof m?.content === "string" ? m.content : (Array.isArray(m?.content) ? m.content : []).filter((c: any) => c?.type === "text").map((c: any) => String(c.text)).join("\n")).trim();
+	const touch = () => { st = { ...st, lastActivity: deps.now() }; }; // in memory only: it is liveness of the agent, not state worth a snapshot
 	pi.on("message_end", guard((event: any) => {
 		const m = event?.message;
+		touch();
+		if (m?.role === "user" && st.knotMsg?.state === "sent" && isKnotUserMessage(textOf(m))) st = { ...st, knotMsg: { ...st.knotMsg, state: "picked up", pickedAt: deps.now() } };
 		if (m?.role === "assistant") {
 			const t = textOf(m);
 			if (t) {
@@ -548,6 +596,7 @@ export function create(pi: any, deps: Deps): Handle {
 
 	pi.on("agent_start", guard(() => {
 		lastText = "";
+		touch();
 		st = { ...st, phase: "running", headActivity: "working" };
 	}));
 
@@ -564,6 +613,7 @@ export function create(pi: any, deps: Deps): Handle {
 
 	pi.on("tool_execution_start", guard((event: any) => {
 		st = { ...st, headActivity: `running ${event.toolName}` };
+		touch();
 		if (event.toolName === "subagent") {
 			const l = launchFromArgs(event.args, deps.now(), event.toolCallId);
 			if (l) launches = addLaunch(launches, l, deps.now());
@@ -572,6 +622,7 @@ export function create(pi: any, deps: Deps): Handle {
 	}));
 
 	pi.on("tool_execution_end", guard((event: any) => {
+		touch();
 		if (["edit", "write", "bash"].includes(event.toolName)) st = { ...st, mutated: true };
 		if (event.toolName === "subagent") {
 			if (event.isError) launches = launches.filter((l) => l.id !== event.toolCallId);

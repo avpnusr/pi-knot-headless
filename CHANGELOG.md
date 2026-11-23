@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- **`stop` from Knot.** A top-level comment by the owner that is exactly `stop` interrupts the running agent (pi's abort). Nothing is sent to the model; the page logs `⏹ stopped from Knot` (or `nothing was running`). Never in self-owned mode; `stop the build` is still a normal message.
+- **`next:` queues a task.** A comment starting with `next:` is delivered as a follow-up, after the current task, instead of interrupting it. Comments are processed in order, one send per kind, so a failed send rolls back only its own batch.
+- **Delivery line.** `📨 Your last comment · HH:MM · “…”` shows `⏳ sent to the session` until the agent actually receives it, then `✅ picked up by the agent at HH:MM`.
+- **Last activity.** The head line shows `last activity HH:MM` (newest tool call, message or run start), so a stuck agent differs from a busy one.
+- **The Knot page title carries the state icon** (⏳ waiting on you, ⚙️ running, 💤 idle, ✅ ended); one rename per state change, once per start, best effort. The page heading uses the same icon (waiting wins over running).
+- **Ended pages say so.** The footer of an ended page says nobody reads comments any more and shows the `pi --session <id>` resume command; live pages explain `stop` and `next:`.
+
 ## [0.2.4] - 2026-11-22
 
 - **A send into the session that keeps failing backs off.** When `sendUserMessage` throws (an answer, a comment or a timeout notice), the retry now waits 20 s, 40 s, 80 s ... up to 5 minutes instead of every poll, and each retry no longer writes a fresh state snapshot into the session file. The header shows `⚠ delivery to the session is failing (n attempts)` and pi's status line `knot: delivery failing (n)` until a send works. Comments stay undelivered (and unresolved) meanwhile.
