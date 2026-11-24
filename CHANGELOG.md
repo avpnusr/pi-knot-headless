@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-24
+
 - **`stop` from Knot.** A top-level comment by the owner that is exactly `stop` interrupts the running agent (pi's abort). Nothing is sent to the model; the page logs `⏹ stopped from Knot` (or `nothing was running`). Never in self-owned mode; `stop the build` is still a normal message.
 - **`next:` queues a task.** A comment starting with `next:` is delivered as a follow-up, after the current task, instead of interrupting it. Comments are processed in order, one send per kind, so a failed send rolls back only its own batch.
 - **Delivery line.** `📨 Your last comment · HH:MM · “…”` shows `⏳ sent to the session` until the agent actually receives it, then `✅ picked up by the agent at HH:MM`.
